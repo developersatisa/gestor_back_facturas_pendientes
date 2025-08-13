@@ -1,0 +1,85 @@
+from sqlalchemy import Column, String, Integer, DateTime, Numeric, Text, SMALLINT
+from sqlalchemy.ext.declarative import declarative_base
+from app.config.database import Base
+
+class Factura(Base):
+    """Modelo SQLAlchemy para la tabla de facturas"""
+    __tablename__ = "GACCDUDATE"
+    __table_args__ = {"schema": "ATISAINT"}
+    
+    # Columnas principales
+    UPDTICK_0 = Column(Integer, primary_key=True)
+    TYP_0 = Column(String(10), nullable=False)
+    NUM_0 = Column(String(50), nullable=False)
+    LIG_0 = Column(SMALLINT, nullable=False)
+    DUDLIG_0 = Column(SMALLINT, nullable=False)
+    ACCNUM_0 = Column(Integer, nullable=False)
+    CPY_0 = Column(String(10), nullable=False)
+    FCY_0 = Column(String(10), nullable=False)
+    CUR_0 = Column(String(10), nullable=False)
+    SAC_0 = Column(String(10), nullable=False)
+    BPR_0 = Column(String(20), nullable=False)
+    BPRTYP_0 = Column(Integer, nullable=False)
+    BPRPAY_0 = Column(String(20), nullable=False)
+    BPAPAY_0 = Column(String(10), nullable=False)
+    DUDDAT_0 = Column(DateTime, nullable=False)
+    PAM_0 = Column(String(10), nullable=False)
+    PAMTYP_0 = Column(Integer, nullable=False)
+    DEP_0 = Column(String(10), nullable=False)
+    SNS_0 = Column(SMALLINT, nullable=False)
+    AMTCUR_0 = Column(Numeric(18, 2), nullable=False)
+    AMTLOC_0 = Column(Numeric(18, 2), nullable=False)
+    PAYCUR_0 = Column(Numeric(18, 2), nullable=False)
+    PAYLOC_0 = Column(Numeric(18, 2), nullable=False)
+    TMPCUR_0 = Column(Numeric(18, 2), nullable=False)
+    TMPLOC_0 = Column(Numeric(18, 2), nullable=False)
+    FLGFUP_0 = Column(Integer, nullable=False)
+    LEVFUP_0 = Column(SMALLINT, nullable=False)
+    DATFUP_0 = Column(DateTime, nullable=False)
+    DPTCOD_0 = Column(String(10), nullable=False)
+    FLGPAZ_0 = Column(Integer, nullable=False)
+    SOI_0 = Column(Integer, nullable=False)
+    SOINUM_0 = Column(String(50), nullable=False)
+    DUDSTA_0 = Column(SMALLINT, nullable=False)
+    DINAMT_0 = Column(Numeric(18, 2), nullable=False)
+    IBDAMT_0 = Column(Numeric(18, 2), nullable=False)
+    VAT_0 = Column(String(10), nullable=False)
+    FIY_0 = Column(SMALLINT, nullable=False)
+    PER_0 = Column(SMALLINT, nullable=False)
+    EXPSENDAT_0 = Column(DateTime, nullable=False)
+    SENDAT_0 = Column(DateTime, nullable=False)
+    SENINS_0 = Column(Integer, nullable=False)
+    BPRFCT_0 = Column(String(50), nullable=False)
+    FCTVCR_0 = Column(String(50), nullable=False)
+    FLGCLE_0 = Column(SMALLINT, nullable=False)
+    PAYDAT_0 = Column(DateTime, nullable=False)
+    TYPDUD_0 = Column(Integer, nullable=False)
+    NUMDUD_0 = Column(String(50), nullable=False)
+    CREDAT_0 = Column(DateTime, nullable=False)
+    CREUSR_0 = Column(String(20), nullable=False)
+    CREDATTIM_0 = Column(DateTime, nullable=False)
+    UPDDATTIM_0 = Column(DateTime, nullable=False)
+    AUUID_0 = Column(Text, nullable=False)
+    UPDUSR_0 = Column(String(20), nullable=False)
+    UMRNUM_0 = Column(String(50), nullable=False)
+    BELVCS_0 = Column(String(50), nullable=False)
+    BIDNUMMAN_0 = Column(String(50), nullable=False)
+    BADBTRULE_0 = Column(Integer, nullable=False)
+    ROWID = Column(Numeric(18, 0), nullable=False)
+
+class Cliente(Base):
+    """Modelo SQLAlchemy para la tabla de clientes"""
+    __tablename__ = "clientes"
+    __table_args__ = {"schema": "dbo"}
+    
+    idcliente = Column(Integer, primary_key=True)
+    cif = Column(String(20))
+    cif_empresa = Column(String(20))
+    razsoc = Column(String(200))
+    direccion = Column(String(200))
+    localidad = Column(String(100))
+    provincia = Column(String(100))
+    cpostal = Column(String(10))
+    codigop = Column(String(20))
+    pais = Column(String(10))
+    cif_factura = Column(String(20)) 
