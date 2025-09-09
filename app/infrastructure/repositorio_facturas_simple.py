@@ -3,6 +3,12 @@ from datetime import date
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+SOCIEDADES_LABELS = {
+    "S005": "Grupo Atisa BPO",
+    "S001": "Asesores Titulados",
+    "S010": "Selier by Atisa",
+}
+
 class RepositorioFacturas:
     def __init__(self, db_session: Session):
         self.db = db_session
@@ -18,7 +24,7 @@ class RepositorioFacturas:
         """Obtiene facturas usando SQL directo con filtros"""
         
         query = """
-        SELECT TYP_0 as tipo, ACCNUM_0 as asiento, CPY_0 as sociedad, FCY_0 as planta, 
+        SELECT TYP_0 as tipo, ACCNUM_0 as asiento, NUM_0 as nombre_factura, CPY_0 as sociedad, FCY_0 as planta, 
                CUR_0 as moneda, SAC_0 as colectivo, BPR_0 as tercero, DUDDAT_0 as vencimiento, 
                PAM_0 as forma_pago, SNS_0 as sentido, AMTCUR_0 as importe, PAYCUR_0 as pago, 
                LEVFUP_0 as nivel_reclamacion, DATFUP_0 as fecha_reclamacion, FLGCLE_0 as check_pago
@@ -31,7 +37,12 @@ class RepositorioFacturas:
         # Filtros fijos
         query += " AND TYP_0 NOT IN ('AA', 'ZZ')"
         query += " AND SAC_0 = '4300'"
-        query += " AND FLGCLE_0 = 1"
+        # Limitar a las sociedades permitidas (CPY_0): S005, S001, S010
+        query += " AND CPY_0 IN ('S005','S001','S010')"
+        # Solo facturas vencidas: DUDDAT_0 anterior a la fecha actual
+        query += " AND DUDDAT_0 < GETDATE()"
+        # Mostrar solo facturas con importe pendiente: importe > pagado
+        query += " AND (AMTCUR_0 - ISNULL(PAYCUR_0, 0)) > 0"
         
         # Filtros opcionales
         if sociedad:
@@ -62,11 +73,17 @@ class RepositorioFacturas:
             # Formatear valores decimales para evitar notación científica
             importe = float(row.importe) if row.importe is not None else 0.0
             pago = float(row.pago) if row.pago is not None else 0.0
+            pendiente = round(importe - pago, 2)
+            if pendiente <= 0:
+                # Seguridad adicional por si el filtro SQL no aplica por driver
+                continue
             
             factura_dict = {
                 'tipo': row.tipo,
                 'asiento': row.asiento,
+                'nombre_factura': getattr(row, 'nombre_factura', None),
                 'sociedad': row.sociedad,
+                'sociedad_nombre': SOCIEDADES_LABELS.get(str(row.sociedad).strip(), None),
                 'planta': row.planta,
                 'moneda': row.moneda,
                 'colectivo': row.colectivo,
@@ -76,6 +93,7 @@ class RepositorioFacturas:
                 'sentido': row.sentido,
                 'importe': importe,
                 'pago': pago,
+                'pendiente': pendiente,
                 'nivel_reclamacion': row.nivel_reclamacion,
                 'fecha_reclamacion': row.fecha_reclamacion,
                 'check_pago': row.check_pago

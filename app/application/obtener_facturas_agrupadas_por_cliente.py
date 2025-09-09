@@ -6,12 +6,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ObtenerFacturasAgrupadasPorCliente:
-    def __init__(self, repo_facturas: RepositorioFacturas, repo_clientes: RepositorioClientes):
+    def __init__(self, repo_facturas: RepositorioFacturas, repo_clientes: RepositorioClientes, repo_gestion=None):
         self.repo_facturas = repo_facturas
         self.repo_clientes = repo_clientes
+        self.repo_gestion = repo_gestion
 
     def execute(
         self,
+        sociedad: str = None,
         tercero: str = None,
         fecha_desde: date = None,
         fecha_hasta: date = None,
@@ -22,43 +24,58 @@ class ObtenerFacturasAgrupadasPorCliente:
         """
         logger.info("Iniciando obtención de facturas agrupadas por cliente...")
         
-        # Consulta para obtener facturas agrupadas por cliente
+        # Consulta para obtener facturas agrupadas por cliente (condiciones solicitadas)
+        # - SAC_0 = '4300'
+        # - Excluir tipos 'AA' y 'ZZ'
+        # - Solo vencidas a hoy (DUDDAT_0 < GETDATE())
         query = """
         SELECT 
           BPR_0 as tercero,
-          COUNT(*) as total_facturas,
-          SUM(AMTCUR_0) as monto_total,
-          SUM(PAYCUR_0) as pago_total,
+          -- Contar solo facturas con saldo pendiente (excluye abonos)
+          SUM(
+            CASE 
+              WHEN (FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0 THEN 1
+              ELSE 0
+            END
+          ) as total_facturas,
+          -- Monto pendiente neto = (pendiente facturas) - (abonos)
+          SUM(
+            CASE 
+              WHEN (SNS_0 = -1 OR FLGCLE_0 = -1 OR AMTCUR_0 < 0) THEN -ABS(AMTCUR_0)
+              WHEN (FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0 
+                THEN (AMTCUR_0 - ISNULL(PAYCUR_0,0)) 
+              ELSE 0 
+            END
+          ) as monto_pendiente,
           MAX(LEVFUP_0) as nivel_reclamacion_max
         FROM 
           x3v12.ATISAINT.GACCDUDATE
         WHERE 
-          TYP_0 NOT IN ('AA', 'ZZ')
-          AND SAC_0 = '4300'
-          AND FLGCLE_0 = 1
+          SAC_0 = '4300'
+          AND TYP_0 NOT IN ('AA', 'ZZ')
+          AND DUDDAT_0 < GETDATE()
+          AND FLGCLE_0 <> 2
         """
         
         params = {}
         
-        # Filtros opcionales
-        if tercero:
-            query += " AND BPR_0 = :tercero"
-            params["tercero"] = tercero
-        if fecha_desde:
-            query += " AND DUDDAT_0 >= :fecha_desde"
-            params["fecha_desde"] = fecha_desde
-        if fecha_hasta:
-            query += " AND DUDDAT_0 <= :fecha_hasta"
-            params["fecha_hasta"] = fecha_hasta
-        if nivel_reclamacion is not None:
-            query += " AND LEVFUP_0 = :nivel_reclamacion"
-            params["nivel_reclamacion"] = nivel_reclamacion
+        # Sin filtros adicionales (se solicitó quitar todos excepto búsqueda en frontend)
         
         query += """
         GROUP BY 
           BPR_0
+        HAVING 
+          -- Restore previous condition: net amount > 0 (pending invoices minus credit notes)
+          SUM(
+            CASE 
+              WHEN (SNS_0 = -1 OR FLGCLE_0 = -1 OR AMTCUR_0 < 0) THEN -ABS(AMTCUR_0)
+              WHEN (FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0 
+                THEN (AMTCUR_0 - ISNULL(PAYCUR_0,0)) 
+              ELSE 0 
+            END
+          ) > 0
         ORDER BY 
-          monto_total DESC
+          monto_pendiente DESC
         """
         
         from sqlalchemy import text
@@ -68,18 +85,42 @@ class ObtenerFacturasAgrupadasPorCliente:
             result = self.repo_facturas.db.execute(text(query), params)
             
             clientes_con_facturas = []
+
+            # Mapa de asignaciones de consultor por idcliente (int)
+            asignaciones_map = {}
+            try:
+                if self.repo_gestion is not None:
+                    asignaciones = self.repo_gestion.listar_asignaciones()
+                    for a in asignaciones:
+                        try:
+                            asignaciones_map[int(a.get('idcliente'))] = a.get('consultor_nombre')
+                        except Exception:
+                            continue
+            except Exception:
+                # No bloquear respuesta si falla la consulta de asignaciones
+                asignaciones_map = {}
             
             for row in result:
                 tercero_original = row.tercero
-                tercero_sin_ceros = str(int(row.tercero))  # Eliminar ceros a la izquierda
+                # Normalizar ID: intentar quitar ceros; si no es numérico, usar original
+                try:
+                    tercero_sin_ceros = str(int(str(row.tercero)))
+                except Exception:
+                    tercero_sin_ceros = str(row.tercero)
                 
                 # Buscar datos del cliente
                 datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
+                # Consultor asignado (si existe asignación)
+                consultor_nombre = None
+                try:
+                    key1 = int(tercero_sin_ceros) if str(tercero_sin_ceros).isdigit() else None
+                    key2 = int(tercero_original) if str(tercero_original).isdigit() else None
+                    consultor_nombre = (asignaciones_map.get(key1) if key1 is not None else None) or (asignaciones_map.get(key2) if key2 is not None else None)
+                except Exception:
+                    consultor_nombre = None
                 
-                # Calcular monto pendiente
-                monto_total = float(row.monto_total) if row.monto_total else 0.0
-                pago_total = float(row.pago_total) if row.pago_total else 0.0
-                monto_pendiente = monto_total - pago_total
+                # Monto pendiente ya viene calculado desde SQL
+                monto_pendiente = float(row.monto_pendiente) if row.monto_pendiente else 0.0
                 
                 # Determinar estado basado en nivel de reclamación
                 nivel_max = row.nivel_reclamacion_max or 0
@@ -96,7 +137,8 @@ class ObtenerFacturasAgrupadasPorCliente:
                     "cif_cliente": datos_cliente.get('cif', 'Sin CIF') if datos_cliente else 'Sin CIF',
                     "numero_facturas": row.total_facturas,
                     "monto_debe": monto_pendiente,
-                    "estado": estado
+                    "estado": estado,
+                    "consultor_asignado": consultor_nombre
                 }
                 
                 clientes_con_facturas.append(cliente_info)

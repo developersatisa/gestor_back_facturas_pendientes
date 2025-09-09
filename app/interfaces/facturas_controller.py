@@ -6,8 +6,9 @@ from app.application.obtener_facturas_filtradas import ObtenerFacturasFiltradas
 from app.application.obtener_estadisticas_facturas import ObtenerEstadisticasFacturas
 from app.application.obtener_facturas_agrupadas_por_cliente import ObtenerFacturasAgrupadasPorCliente
 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
+from app.infrastructure.repositorio_gestion import RepositorioGestion
 from app.domain.models.Factura import Factura
-from app.config.database import get_facturas_db, get_clientes_db
+from app.config.database import get_facturas_db, get_clientes_db, get_gestion_db
 import logging
 
 router = APIRouter()
@@ -21,17 +22,23 @@ def get_repo_facturas(db: Session = Depends(get_facturas_db)):
 
 def get_repo_clientes(db: Session = Depends(get_clientes_db)):
     return RepositorioClientes(db)
+ 
+def get_repo_gestion(db: Session = Depends(get_gestion_db)):
+    return RepositorioGestion(db)
 
 @router.get("/api/facturas-cliente/{idcliente}", response_model=List[dict], tags=["Facturas"])
 def obtener_facturas_cliente(
     idcliente: str,
+    sociedad: Optional[str] = Query(None, description="Filtro por código de sociedad (CPY_0)"),
     repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
     repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
+    repo_gestion: RepositorioGestion = Depends(get_repo_gestion),
 ):
     try:
         # Obtener facturas del cliente específico
         use_case = ObtenerFacturasFiltradas(repo_facturas)
         facturas = use_case.execute(
+            sociedad=sociedad,
             tercero=idcliente,  # Usar el idcliente como tercero
         )
         
@@ -53,17 +60,20 @@ def obtener_facturas_cliente(
 
 @router.get("/api/clientes-con-resumen", response_model=List[dict], tags=["Clientes"])
 def obtener_clientes_con_resumen(
+    sociedad: Optional[str] = Query(None, description="Filtro por código de sociedad (CPY_0)"),
     tercero: Optional[str] = Query(None),
     fecha_desde: Optional[date] = Query(None),
     fecha_hasta: Optional[date] = Query(None),
     nivel_reclamacion: Optional[int] = Query(None),
     repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
     repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
+    repo_gestion: RepositorioGestion = Depends(get_repo_gestion),
 ):
     try:
         # Obtener facturas agrupadas por cliente
-        use_case = ObtenerFacturasAgrupadasPorCliente(repo_facturas, repo_clientes)
+        use_case = ObtenerFacturasAgrupadasPorCliente(repo_facturas, repo_clientes, repo_gestion)
         clientes_con_facturas = use_case.execute(
+            sociedad=sociedad,
             tercero=tercero,
             fecha_desde=fecha_desde,
             fecha_hasta=fecha_hasta,
@@ -89,5 +99,3 @@ def obtener_estadisticas(
     except Exception as e:
         logger.error(f"Error al obtener estadísticas: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error interno del servidor")
-
-

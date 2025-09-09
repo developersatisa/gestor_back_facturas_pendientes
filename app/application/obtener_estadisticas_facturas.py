@@ -20,81 +20,66 @@ class ObtenerEstadisticasFacturas:
         """
         logger.info("Iniciando cálculo de estadísticas...")
         
-        # 1. Total de empresas con facturas pendientes (sin repetir empresas)
-        query_empresas = """
-        SELECT 
-          COUNT(DISTINCT BPR_0) AS total_empresas_pendientes
-        FROM 
-          x3v12.ATISAINT.GACCDUDATE
-        WHERE 
-          TYP_0 NOT IN ('AA', 'ZZ')
-          AND SAC_0 = '4300'
-          AND FLGCLE_0 = 1
+        # Totales unificados (empresas, facturas, monto neto)
+        query_totales = """
+        WITH base AS (
+          SELECT BPR_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
+          FROM x3v12.ATISAINT.GACCDUDATE
+          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+            AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+        ),
+        agg AS (
+          SELECT
+            BPR_0,
+            SUM(CASE WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN 1 ELSE 0 END) AS total_facturas,
+            SUM(CASE
+                  WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                  WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                  ELSE 0
+                END) AS monto_neto
+          FROM base
+          GROUP BY BPR_0
+        )
+        SELECT
+          (SELECT COUNT(1) FROM agg WHERE monto_neto > 0) AS total_empresas_pendientes,
+          (SELECT COALESCE(SUM(total_facturas),0) FROM agg) AS total_facturas_pendientes,
+          (SELECT COALESCE(SUM(monto_neto),0) FROM agg) AS monto_total_adeudado;
         """
-        
-        # 2. Total de facturas pendientes
-        query_facturas = """
-        SELECT 
-          COUNT(*) AS total_facturas_pendientes
-        FROM 
-          x3v12.ATISAINT.GACCDUDATE
-        WHERE 
-          TYP_0 NOT IN ('AA', 'ZZ')
-          AND SAC_0 = '4300'
-          AND FLGCLE_0 = 1
-        """
-        
-        # 3. Monto total adeudado (en moneda original)
-        query_monto = """
-        SELECT 
-          SUM(AMTCUR_0) AS monto_total_adeudado
-        FROM 
-          x3v12.ATISAINT.GACCDUDATE
-        WHERE 
-          TYP_0 NOT IN ('AA', 'ZZ')
-          AND SAC_0 = '4300'
-          AND FLGCLE_0 = 1
-        """
-        
-        # 4. Lista de empresas con sus montos totales (LIMITADO A 50 para evitar timeout)
+
+        # Empresas TOP 50 por monto neto
         query_empresas_montos = """
+        WITH base AS (
+          SELECT BPR_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
+          FROM x3v12.ATISAINT.GACCDUDATE
+          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+            AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+        )
         SELECT TOP 50
-          CAST(BPR_0 AS INT) as tercero_sin_ceros,
           BPR_0 as tercero_original,
-          SUM(AMTCUR_0) as monto_total
-        FROM 
-          x3v12.ATISAINT.GACCDUDATE
-        WHERE 
-          TYP_0 NOT IN ('AA', 'ZZ')
-          AND SAC_0 = '4300'
-          AND FLGCLE_0 = 1
-        GROUP BY 
-          BPR_0
-        ORDER BY 
-          monto_total DESC
+          SUM(CASE
+                WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                ELSE 0
+              END) as monto_total
+        FROM base
+        GROUP BY BPR_0
+        HAVING SUM(CASE
+                      WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                      WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                      ELSE 0
+                    END) > 0
+        ORDER BY monto_total DESC;
         """
         
         # Ejecutar las consultas
         from sqlalchemy import text
         
         try:
-            logger.info("Ejecutando consulta 1: Total de empresas...")
-            # Consulta 1: Total de empresas
-            result_empresas = self.repo_facturas.db.execute(text(query_empresas))
-            total_empresas = result_empresas.fetchone()[0] or 0
-            logger.info(f"Total empresas: {total_empresas}")
-            
-            logger.info("Ejecutando consulta 2: Total de facturas...")
-            # Consulta 2: Total de facturas
-            result_facturas = self.repo_facturas.db.execute(text(query_facturas))
-            total_facturas = result_facturas.fetchone()[0] or 0
-            logger.info(f"Total facturas: {total_facturas}")
-            
-            logger.info("Ejecutando consulta 3: Monto total...")
-            # Consulta 3: Monto total
-            result_monto = self.repo_facturas.db.execute(text(query_monto))
-            monto_total = result_monto.fetchone()[0] or 0.0
-            logger.info(f"Monto total: {monto_total}")
+            logger.info("Calculando totales unificados para dashboard...")
+            res_tot = self.repo_facturas.db.execute(text(query_totales)).fetchone()
+            total_empresas = int(res_tot.total_empresas_pendientes or 0)
+            total_facturas = int(res_tot.total_facturas_pendientes or 0)
+            monto_total = float(res_tot.monto_total_adeudado or 0.0)
             
             logger.info("Ejecutando consulta 4: Empresas con montos...")
             # Consulta 4: Empresas con montos (LIMITADO A 50)
@@ -104,7 +89,10 @@ class ObtenerEstadisticasFacturas:
             logger.info("Procesando empresas y buscando clientes...")
             for i, row in enumerate(result_empresas_montos):
                 tercero_original = row.tercero_original
-                tercero_sin_ceros = str(row.tercero_sin_ceros)  # Convertir a string sin ceros
+                try:
+                    tercero_sin_ceros = str(int(tercero_original))
+                except Exception:
+                    tercero_sin_ceros = str(tercero_original)
                 monto = float(row.monto_total) if row.monto_total else 0.0
                 
                 logger.info(f"Procesando empresa {i+1}: {tercero_original} -> {tercero_sin_ceros}")
@@ -130,7 +118,8 @@ class ObtenerEstadisticasFacturas:
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
                     "colectivo": "4300",
-                    "check_pago": 1
+                    "vencidas": True,
+                    "flgcle_excluir": 2
                 },
                 "nota": "Mostrando solo las 50 empresas con mayor monto pendiente"
             }
