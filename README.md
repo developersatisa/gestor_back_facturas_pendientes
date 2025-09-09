@@ -1,5 +1,3 @@
-# gestor_facturas_pendientes
-Proyecto que se encarga de gestionar las facturas impagadas y pendientes de los distintos clientes de ATISA. (BACK)
 # 🧾 Sistema de Gestión de Facturas Pendientes - ATISA
 
 ## 📋 Descripción del Proyecto
@@ -382,3 +380,18 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 **Desarrollado por el equipo de ATISA**
 
 *Última actualización: Agosto 2025* 
+## Cambios Recientes (Gestión / Sociedades / Registro)
+
+- Gestión en BD real (ATISA_Input): consultores (`dbo.consultores`), asignaciones (`dbo.cliente_consultor`), registro de acciones (`dbo.factura_acciones`) y cambios (`dbo.factura_cambios`). Sin claves foráneas, creación automática al arranque si hay permisos.
+- Endpoints nuevos:
+  - Consultores: `GET/POST/PUT/DELETE /api/consultores`
+  - Asignación: `GET /api/consultores/asignacion/{idcliente}`, `POST /api/consultores/asignar`, `DELETE /api/consultores/asignacion/{idcliente}`, `GET /api/consultores/asignaciones`
+  - Registro de facturas: `POST/GET /api/facturas/acciones`, `POST/GET /api/facturas/cambios`
+- Columnas de registro:
+  - `factura_acciones`: `idcliente`, `tercero (BPR_0)`, `tipo (TYP_0)`, `asiento (ACCNUM_0)`, `accion_tipo`, `descripcion`, `aviso`, `usuario`, `creado_en`.
+  - `factura_cambios`: `idcliente`, `tercero`, `tipo`, `asiento`, `numero_anterior/numero_nuevo`, `monto_anterior/monto_nuevo`, `vencimiento_anterior/vencimiento_nuevo`, `motivo`, `usuario`, `creado_en`.
+- Filtro por sociedades (CPY_0): todas las consultas de facturas y estadísticas limitadas a `S005` (Grupo Atisa BPO), `S001` (Asesores Titulados), `S010` (Selier by Atisa). Endpoints aceptan `?sociedad=` para acotar.
+// Nota: El criterio de selección vuelve al original del proyecto.
+- Etiqueta de sociedad en respuestas de facturas: se añade `sociedad_nombre` junto a `sociedad`.
+- Nombre de factura: se añade `nombre_factura` mapeado desde `NUM_0` en X3.
+- Solo se consideran facturas vencidas en consultas: DUDDAT_0 < GETDATE().
