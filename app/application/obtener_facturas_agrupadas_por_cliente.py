@@ -55,6 +55,8 @@ class ObtenerFacturasAgrupadasPorCliente:
           AND TYP_0 NOT IN ('AA', 'ZZ')
           AND DUDDAT_0 < GETDATE()
           AND FLGCLE_0 <> 2
+          AND CPY_0 IN ('S005','S001','S010')
+
         """
         
         params = {}
@@ -77,13 +79,45 @@ class ObtenerFacturasAgrupadasPorCliente:
         ORDER BY 
           monto_pendiente DESC
         """
+
+        # Consulta auxiliar: sociedades por cliente (CPY_0) con saldo pendiente
+        query_sociedades = """
+        SELECT BPR_0 as tercero, CPY_0 as sociedad
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE SAC_0 = '4300'
+          AND TYP_0 NOT IN ('AA','ZZ')
+          AND DUDDAT_0 < GETDATE()
+          AND FLGCLE_0 <> 2
+          AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0
+          AND CPY_0 IN ('S005','S001','S010')
+        GROUP BY BPR_0, CPY_0
+        """
         
         from sqlalchemy import text
         
         try:
             logger.info("Ejecutando consulta de facturas agrupadas por cliente...")
-            result = self.repo_facturas.db.execute(text(query), params)
-            
+            # Para evitar 'Connection is busy with results for another command' en pyodbc,
+            # ejecutamos y consumimos primero la consulta de sociedades y luego la principal.
+            res_soc = self.repo_facturas.db.execute(text(query_sociedades))
+            filas_soc = res_soc.fetchall()
+            sociedades_map = {}
+            for row in filas_soc:
+                try:
+                    key = str(row.tercero)
+                except Exception:
+                    key = str(row[0])
+                try:
+                    soc = str(row.sociedad).strip()
+                except Exception:
+                    soc = str(row[1]).strip()
+                if key not in sociedades_map:
+                    sociedades_map[key] = set()
+                if soc:
+                    sociedades_map[key].add(soc)
+
+            # Ahora ejecutamos la consulta principal y la iteramos
+            res_main = self.repo_facturas.db.execute(text(query), params)
             clientes_con_facturas = []
 
             # Mapa de asignaciones de consultor por idcliente (int)
@@ -100,7 +134,7 @@ class ObtenerFacturasAgrupadasPorCliente:
                 # No bloquear respuesta si falla la consulta de asignaciones
                 asignaciones_map = {}
             
-            for row in result:
+            for row in res_main:
                 tercero_original = row.tercero
                 # Normalizar ID: intentar quitar ceros; si no es numérico, usar original
                 try:
@@ -131,6 +165,7 @@ class ObtenerFacturasAgrupadasPorCliente:
                 else:
                     estado = "verde"
                 
+                # Acceso seguro a alias agregados (según driver pueden variar may/min)
                 cliente_info = {
                     "idcliente": tercero_original,
                     "nombre_cliente": datos_cliente.get('razsoc', 'Sin nombre') if datos_cliente else 'Sin nombre',
@@ -138,7 +173,8 @@ class ObtenerFacturasAgrupadasPorCliente:
                     "numero_facturas": row.total_facturas,
                     "monto_debe": monto_pendiente,
                     "estado": estado,
-                    "consultor_asignado": consultor_nombre
+                    "consultor_asignado": consultor_nombre,
+                    "sociedades": sorted(list(sociedades_map.get(str(tercero_original), set()))),
                 }
                 
                 clientes_con_facturas.append(cliente_info)

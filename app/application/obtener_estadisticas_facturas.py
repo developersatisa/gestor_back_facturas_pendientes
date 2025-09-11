@@ -70,6 +70,50 @@ class ObtenerEstadisticasFacturas:
                     END) > 0
         ORDER BY monto_total DESC;
         """
+
+        # Sociedades TOP por monto neto (CPY_0)
+        query_sociedades_montos = """
+        WITH base AS (
+          SELECT CPY_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
+          FROM x3v12.ATISAINT.GACCDUDATE
+          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+            AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+        )
+        SELECT
+          CPY_0 as sociedad,
+          SUM(CASE
+                WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                ELSE 0
+              END) as monto_total
+        FROM base
+        GROUP BY CPY_0
+        HAVING SUM(CASE
+                      WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                      WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                      ELSE 0
+                    END) > 0
+        ORDER BY monto_total DESC;
+        """
+
+        # Facturas más vencidas (desc por días vencidos)
+        query_facturas_mas_vencidas = """
+        SELECT TOP 50
+          TYP_0 as tipo,
+          ACCNUM_0 as asiento,
+          BPR_0 as tercero,
+          CPY_0 as sociedad,
+          DUDDAT_0 as vencimiento,
+          DATEDIFF(day, DUDDAT_0, GETDATE()) as dias_vencidos,
+          AMTCUR_0 as importe,
+          ISNULL(PAYCUR_0,0) as pago,
+          (AMTCUR_0 - ISNULL(PAYCUR_0,0)) as pendiente
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+          AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+          AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0
+        ORDER BY DATEDIFF(day, DUDDAT_0, GETDATE()) DESC;
+        """
         
         # Ejecutar las consultas
         from sqlalchemy import text
@@ -109,12 +153,50 @@ class ObtenerEstadisticasFacturas:
                 empresas_montos.append(empresa_info)
             
             logger.info(f"Procesamiento completado. {len(empresas_montos)} empresas procesadas.")
+
+            logger.info("Calculando montos por sociedad (CPY_0)...")
+            result_sociedades = self.repo_facturas.db.execute(text(query_sociedades_montos))
+            sociedades_montos: List[Dict[str, Any]] = []
+            # Intentar enriquecer con nombres si existen en repositorio (constante en infra)
+            try:
+                from app.infrastructure.repositorio_facturas_simple import SOCIEDADES_LABELS
+            except Exception:
+                SOCIEDADES_LABELS = {}
+            for row in result_sociedades:
+                codigo = str(row.sociedad).strip() if row.sociedad is not None else ''
+                monto = float(row.monto_total) if row.monto_total else 0.0
+                sociedades_montos.append({
+                    "codigo": codigo,
+                    "nombre": SOCIEDADES_LABELS.get(codigo, codigo),
+                    "monto": monto,
+                })
+
+            logger.info("Obteniendo facturas más vencidas...")
+            result_vencidas = self.repo_facturas.db.execute(text(query_facturas_mas_vencidas))
+            facturas_vencidas: List[Dict[str, Any]] = []
+            for row in result_vencidas:
+                importe = float(row.importe) if row.importe is not None else 0.0
+                pago = float(row.pago) if row.pago is not None else 0.0
+                pendiente = float(row.pendiente) if row.pendiente is not None else max(0.0, importe - pago)
+                facturas_vencidas.append({
+                    "tipo": row.tipo,
+                    "asiento": row.asiento,
+                    "tercero": row.tercero,
+                    "sociedad": row.sociedad,
+                    "vencimiento": row.vencimiento,
+                    "dias_vencidos": int(row.dias_vencidos or 0),
+                    "importe": importe,
+                    "pago": pago,
+                    "pendiente": pendiente,
+                })
             
             return {
                 "total_empresas_pendientes": total_empresas,
                 "total_facturas_pendientes": total_facturas,
                 "monto_total_adeudado": float(monto_total) if monto_total else 0.0,
                 "empresas_con_montos": empresas_montos,
+                "sociedades_con_montos": sociedades_montos,
+                "facturas_mas_vencidas": facturas_vencidas,
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
                     "colectivo": "4300",

@@ -72,19 +72,25 @@ def obtener_clientes_con_resumen(
     try:
         # Obtener facturas agrupadas por cliente
         use_case = ObtenerFacturasAgrupadasPorCliente(repo_facturas, repo_clientes, repo_gestion)
-        clientes_con_facturas = use_case.execute(
-            sociedad=sociedad,
-            tercero=tercero,
-            fecha_desde=fecha_desde,
-            fecha_hasta=fecha_hasta,
-            nivel_reclamacion=nivel_reclamacion,
-        )
+        try:
+            clientes_con_facturas = use_case.execute(
+                sociedad=sociedad,
+                tercero=tercero,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                nivel_reclamacion=nivel_reclamacion,
+            )
+        except Exception as inner_err:
+            # No tumbar el endpoint: devolver lista vacía y loguear el detalle
+            logger.error(f"Error en use_case clientes-con-resumen: {inner_err}")
+            clientes_con_facturas = []
         
         logger.info(f"Clientes con resumen encontrados: {len(clientes_con_facturas)}")
         return clientes_con_facturas
     except Exception as e:
         logger.error(f"Error al obtener clientes con resumen: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error interno del servidor")
+        # Fallback final seguro: no romper el cliente si algo inesperado sucede
+        return []
 
 @router.get("/api/estadisticas", response_model=dict, tags=["Estadísticas"])
 def obtener_estadisticas(
