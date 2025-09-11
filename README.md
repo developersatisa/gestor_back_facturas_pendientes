@@ -97,6 +97,16 @@ GET /api/estadisticas
 **Descripción**: Obtiene estadísticas generales del sistema de facturación
 **Respuesta**: Métricas consolidadas del sistema
 
+## 🔄 Estado actual del backend (resumen)
+
+- `/api/estadisticas` devuelve campos extra usados por el frontend:
+  - `sociedades_con_montos`: deuda agregada por sociedad (CPY_0).
+  - `facturas_mas_vencidas`: listado de facturas vencidas (ordenadas) para tabla con paginación.
+- `/api/clientes-con-resumen`:
+  - Aplica filtro por sociedades `CPY_0 IN ('S005','S001','S010')` para que el conteo de facturas y deuda coincidan con negocio.
+  - Evita el error de PyODBC “Connection is busy with results for another command” consumiendo primero la consulta de sociedades y después la principal.
+  - El controlador captura excepciones y responde `[]` para no romper el frontend (se deja traza en logs).
+
 #### 🏥 Health Check
 ```http
 GET /health
