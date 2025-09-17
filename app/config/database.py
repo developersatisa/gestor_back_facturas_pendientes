@@ -133,17 +133,26 @@ def ensure_gestion_columns():
             if dialect == 'mssql':
                 # factura_acciones.idcliente
                 conn.execute(text("IF COL_LENGTH('dbo.factura_acciones','idcliente') IS NULL ALTER TABLE dbo.factura_acciones ADD idcliente INT NULL;"))
-                # factura_cambios.idcliente
-                conn.execute(text("IF COL_LENGTH('dbo.factura_cambios','idcliente') IS NULL ALTER TABLE dbo.factura_cambios ADD idcliente INT NULL;"))
+                # Limpieza en facturas_cambio_pago: asegurar columna monto_pagado y eliminar creado_en si existe
+                # facturas_cambio_pago.monto_pagado (si existe la tabla)
+                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','monto_pagado') IS NULL ALTER TABLE dbo.facturas_cambio_pago ADD monto_pagado DECIMAL(18,2) NULL;"))
+                # facturas_cambio_pago.idcliente (guardar BPR_0 como NVARCHAR)
+                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','idcliente') IS NULL ALTER TABLE dbo.facturas_cambio_pago ADD idcliente NVARCHAR(50) NULL;"))
+                # Eliminar default constraint y columna creado_en si existe
+                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','creado_en') IS NOT NULL BEGIN IF OBJECT_ID('DF_facturas_cambio_pago_creado','D') IS NOT NULL ALTER TABLE dbo.facturas_cambio_pago DROP CONSTRAINT DF_facturas_cambio_pago_creado; ALTER TABLE dbo.facturas_cambio_pago DROP COLUMN creado_en; END"))
             else:
-                # SQLite u otros: intentar ALTER TABLE ADD COLUMN si no existe
-                # SQLite no soporta IF NOT EXISTS en ADD COLUMN; intentamos y capturamos error si ya existe
+                # SQLite u otros: intentar ALTER TABLE ADD COLUMN en factura_acciones si no existe
                 try:
                     conn.execute(text("ALTER TABLE factura_acciones ADD COLUMN idcliente INTEGER"))
                 except Exception:
                     pass
+                # Intentar añadir columnas en facturas_cambio_pago si existe
                 try:
-                    conn.execute(text("ALTER TABLE factura_cambios ADD COLUMN idcliente INTEGER"))
+                    conn.execute(text("/* disabled */ SELECT 1"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("/* disabled */ SELECT 1"))
                 except Exception:
                     pass
     except Exception:
@@ -180,30 +189,71 @@ def ensure_gestion_tables():
                     END
                     """
                 ))
-                # Tabla factura_cambios
+                # Tabla facturas_cambio_pago (historial de pagos de facturas, mínima)
                 conn.execute(text(
                     """
-                    IF OBJECT_ID(N'dbo.factura_cambios', N'U') IS NULL
+                    -- deshabilitado: creación movida a x3v12.ATISAINT
+                    IF 1=0 AND OBJECT_ID(N'dbo.facturas_cambio_pago', N'U') IS NULL
                     BEGIN
-                        CREATE TABLE dbo.factura_cambios (
+                        CREATE TABLE dbo.facturas_cambio_pago (
                             id INT IDENTITY(1,1) PRIMARY KEY,
-                            idcliente INT NULL,
-                            tercero NVARCHAR(50) NOT NULL,
-                            tipo NVARCHAR(10) NOT NULL,
-                            asiento NVARCHAR(50) NOT NULL,
-                            numero_anterior NVARCHAR(50) NULL,
-                            numero_nuevo NVARCHAR(50) NULL,
-                            monto_anterior DECIMAL(18,2) NULL,
-                            monto_nuevo DECIMAL(18,2) NULL,
-                            vencimiento_anterior DATETIME2 NULL,
-                            vencimiento_nuevo DATETIME2 NULL,
-                            motivo NVARCHAR(MAX) NULL,
-                            usuario NVARCHAR(100) NULL,
-                            creado_en DATETIME2 NOT NULL CONSTRAINT DF_factura_cambios_creado DEFAULT(SYSDATETIME())
+                            factura_id NVARCHAR(64) NOT NULL,
+                            fecha_cambio DATE NOT NULL,
+                            monto_pagado DECIMAL(18,2) NULL,
+                            idcliente NVARCHAR(50) NULL
                         );
                     END
                     """
                 ))
+            else:
+                # No crear explícitamente en otros motores aquí; se gestionará vía ORM/migraciones si aplica.
+                pass
     except Exception:
         # No bloquear el arranque si falla
+        pass
+
+
+def ensure_facturas_pago_table():
+    """
+    Crea el esquema ATISAINT (si no existe) y la tabla ATISAINT.facturas_cambio_pago con columnas:
+    - id INT IDENTITY PK
+    - factura_id NVARCHAR(64) NOT NULL (SIN restricción UNIQUE para permitir múltiples pagos)
+    - fecha_cambio DATE NOT NULL
+    - monto_pagado DECIMAL(18,2) NULL
+    - idcliente NVARCHAR(50) NULL
+
+    En motores no MSSQL, intenta crear una tabla equivalente sin esquema.
+    """
+    try:
+        with facturas_engine.begin() as conn:
+            dialect = conn.dialect.name
+            if dialect == 'mssql':
+                # Crear esquema ATISAINT si no existe
+                conn.execute(text("IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'ATISAINT') EXEC('CREATE SCHEMA ATISAINT');"))
+                
+                # Crear tabla solo si no existe (sin restricción UNIQUE)
+                conn.execute(text(
+                    """
+                    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'ATISAINT.facturas_cambio_pago') AND type in (N'U'))
+                    BEGIN
+                        CREATE TABLE ATISAINT.facturas_cambio_pago (
+                            id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                            factura_id NVARCHAR(64) NOT NULL,
+                            fecha_cambio DATE NOT NULL,
+                            monto_pagado DECIMAL(18,2) NULL,
+                            idcliente NVARCHAR(50) NULL
+                        );
+                    END
+                    """
+                ))
+                
+                # Crear índice para mejorar consultas por factura_id (solo si no existe)
+                conn.execute(text("""
+                    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_facturas_cambio_pago_factura_id' AND object_id = OBJECT_ID('ATISAINT.facturas_cambio_pago'))
+                    BEGIN
+                        CREATE INDEX IX_facturas_cambio_pago_factura_id ON ATISAINT.facturas_cambio_pago(factura_id);
+                    END
+                """))
+    except Exception:
+        # No bloquear arranque
         pass

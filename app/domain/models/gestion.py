@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, UniqueConstraint, Numeric, Text
 from app.config.database import GestionBase
+from sqlalchemy.ext.declarative import declarative_base
 
 
 class Consultor(GestionBase):
@@ -30,7 +31,10 @@ class ClienteConsultor(GestionBase):
     )
 
 
-class FacturaCambio(GestionBase):
+# Nota: FacturaCambio se mapea en una base separada para evitar que create_all la cree automáticamente.
+GestionOptionalBase = declarative_base()
+
+class FacturaCambio(GestionOptionalBase):
     __tablename__ = "factura_cambios"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -17,7 +17,6 @@ El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separaci�
 │   ├── 📁 interfaces/          # Controladores y endpoints de la API
 │   └── 📁 config/              # Configuración de base de datos y settings
 ├── 🧪 tests/                   # Pruebas unitarias y de integración
-├── 🐳 Dockerfile               # Configuración para contenedores Docker
 ├── 📋 requirements.txt          # Dependencias del proyecto
 └── 🚀 main.py                  # Punto de entrada de la aplicación
 ```
@@ -36,7 +35,6 @@ El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separaci�
 - **SQL Server**: Base de datos corporativa de ATISA
 
 ### DevOps & Testing
-- **Docker**: Contenedorización de la aplicación
 - **Pytest**: Framework de testing
 - **Uvicorn**: Servidor ASGI para FastAPI
 
@@ -141,7 +139,6 @@ class Factura(BaseModel):
 ### Prerrequisitos
 - Python 3.11 o superior
 - MariaDB/MySQL o SQL Server
-- Docker (opcional)
 
 ### 1. Clonar el Repositorio
 ```bash
@@ -185,32 +182,6 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## 🐳 Ejecución con Docker
-
-### Construir la Imagen
-```bash
-docker build -t gestor-facturas-backend .
-```
-
-### Ejecutar el Contenedor
-```bash
-docker run -d -p 8000:8000 --name gestor-facturas gestor-facturas-backend
-```
-
-### Con Docker Compose (recomendado)
-```yaml
-version: '3.8'
-services:
-  backend:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL_FACTURAS=${DATABASE_URL_FACTURAS}
-      - DATABASE_URL_CLIENTES=${DATABASE_URL_CLIENTES}
-    volumes:
-      - ./logs:/app/logs
-```
 
 ## 🧪 Testing
 
@@ -384,7 +355,6 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 - ✅ Arquitectura limpia y escalable
 - ✅ Documentación completa
 - ✅ Tests unitarios
-- ✅ Configuración Docker
 
 ---
 **Desarrollado por el equipo de ATISA**
