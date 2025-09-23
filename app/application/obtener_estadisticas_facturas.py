@@ -20,6 +20,42 @@ class ObtenerEstadisticasFacturas:
         """
         logger.info("Iniciando cálculo de estadísticas...")
         
+        # Si el motor no es MSSQL (p.ej. SQLite en desarrollo), devolver valores seguros
+        try:
+            bind = self.repo_facturas.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return {
+                    "total_empresas_pendientes": 0,
+                    "total_facturas_pendientes": 0,
+                    "monto_total_adeudado": 0.0,
+                    "empresas_con_montos": [],
+                    "sociedades_con_montos": [],
+                    "facturas_mas_vencidas": [],
+                    "filtros_aplicados": {
+                        "tipo_excluido": ["AA", "ZZ"],
+                        "colectivo": "4300",
+                        "vencidas": True,
+                        "flgcle_excluir": 2,
+                    },
+                    "nota": "Sin conexión MSSQL configurada; devolviendo valores vacíos (desarrollo)",
+                }
+        except Exception:
+            return {
+                "total_empresas_pendientes": 0,
+                "total_facturas_pendientes": 0,
+                "monto_total_adeudado": 0.0,
+                "empresas_con_montos": [],
+                "sociedades_con_montos": [],
+                "facturas_mas_vencidas": [],
+                "filtros_aplicados": {
+                    "tipo_excluido": ["AA", "ZZ"],
+                    "colectivo": "4300",
+                    "vencidas": True,
+                    "flgcle_excluir": 2,
+                },
+                "nota": "Error detectando motor de BD; devolviendo valores vacíos",
+            }
+
         # Totales unificados (empresas, facturas, monto neto)
         query_totales = """
         WITH base AS (

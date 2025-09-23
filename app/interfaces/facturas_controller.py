@@ -80,6 +80,7 @@ def obtener_clientes_con_resumen(
                 fecha_hasta=fecha_hasta,
                 nivel_reclamacion=nivel_reclamacion,
             )
+            print(clientes_con_facturas)
         except Exception as inner_err:
             # No tumbar el endpoint: devolver lista vacía y loguear el detalle
             logger.error(f"Error en use_case clientes-con-resumen: {inner_err}")
@@ -104,7 +105,7 @@ def obtener_estadisticas(
         return estadisticas
     except Exception as e:
         logger.error(f"Error al obtener estadísticas: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error interno del servidor")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"{e}")
 
 
 @router.get("/api/facturas/historial-pago", response_model=dict | None, tags=["Facturas"])

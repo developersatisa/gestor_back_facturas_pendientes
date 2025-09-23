@@ -6,15 +6,45 @@ from app.config.settings import (
     get_db_facturas_url,
     get_db_clientes_url,
     get_historial_db_url,
+    get_odbc_driver_name,
 )
+import logging
+
+logger = logging.getLogger("db")
+
+
+def _augment_pyodbc_url(url_str: str) -> str:
+    """Ensure pyodbc URL includes an explicit driver to avoid IM002.
+
+    If using mssql+pyodbc without `driver=` or `odbc_connect=`, append
+    `driver=<name>&TrustServerCertificate=yes`.
+    """
+    try:
+        if url_str and url_str.startswith("mssql+pyodbc") and "odbc_connect=" not in url_str:
+            if "driver=" not in url_str:
+                driver = get_odbc_driver_name().replace(" ", "+")
+                sep = "&" if "?" in url_str else "?"
+                url_str = f"{url_str}{sep}driver={driver}&TrustServerCertificate=yes"
+    except Exception:
+        pass
+    return url_str
+
+
+def _log_available_odbc_drivers():
+    try:
+        import pyodbc  # type: ignore
+        drivers = pyodbc.drivers()
+        logger.info(f"ODBC drivers disponibles: {drivers}")
+    except Exception as e:
+        logger.warning(f"No se pudieron listar drivers ODBC: {e}")
 
 # Configuración para base de datos de facturas (x3v12)
-FACTURAS_DATABASE_URL = get_db_facturas_url()
+FACTURAS_DATABASE_URL = _augment_pyodbc_url(get_db_facturas_url())
 facturas_engine = create_engine(FACTURAS_DATABASE_URL)
 FacturasSessionLocal = sessionmaker(bind=facturas_engine)
 
 # Configuración para base de datos de clientes (ATISA_Input)
-CLIENTES_DATABASE_URL = get_db_clientes_url()
+CLIENTES_DATABASE_URL = _augment_pyodbc_url(get_db_clientes_url())
 clientes_engine = create_engine(CLIENTES_DATABASE_URL)
 ClientesSessionLocal = sessionmaker(bind=clientes_engine)
 
@@ -58,6 +88,15 @@ def init_historial_db(metadata):
     Recibe el objeto Base.metadata del historial para evitar dependencia circular.
     """
     metadata.create_all(bind=historial_engine)
+
+
+def log_odbc_env_diagnostics():
+    """Optional helper to log pyodbc driver availability at startup."""
+    try:
+        if FACTURAS_DATABASE_URL.startswith("mssql+pyodbc") or CLIENTES_DATABASE_URL.startswith("mssql+pyodbc"):
+            _log_available_odbc_drivers()
+    except Exception:
+        pass
 
 """
 Gestión (consultores, asignaciones y registro de facturas)

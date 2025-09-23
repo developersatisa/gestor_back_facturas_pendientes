@@ -5,6 +5,7 @@ from app.interfaces.facturas_controller import router as facturas_router
 from app.interfaces.historial_controller import router as historial_router
 from app.interfaces.consultores_controller import router as consultores_router
 from app.interfaces.registro_facturas_controller import router as registro_facturas_router
+from app.auth.routes import router as auth_router
 from app.config.database import (
     init_historial_db,
     HistorialBase,
@@ -14,12 +15,14 @@ from app.config.database import (
     ensure_gestion_columns,
     ensure_gestion_tables,
     ensure_facturas_pago_table,
+    log_odbc_env_diagnostics,
 )
 
 # Orígenes permitidos para CORS
 origins = [
     "http://localhost:5173",
-    "http://10.150.22.15:5173"
+    "http://10.150.22.15:5173",
+    "http://localhost:3000",
 ]
 
 app = FastAPI(
@@ -45,6 +48,7 @@ app.include_router(facturas_router)
 app.include_router(historial_router)
 app.include_router(consultores_router)
 app.include_router(registro_facturas_router)
+app.include_router(auth_router)
 
 # Health check
 @app.get("/health", tags=["Status"])
@@ -58,6 +62,11 @@ def health_check():
 # Inicialización de BD local de historial y gestión
 @app.on_event("startup")
 def startup_event():
+    try:
+        # Diagnóstico de drivers ODBC disponibles (útil para errores IM002)
+        log_odbc_env_diagnostics()
+    except Exception:
+        pass
     try:
         init_historial_db(HistorialBase.metadata)
     except Exception:

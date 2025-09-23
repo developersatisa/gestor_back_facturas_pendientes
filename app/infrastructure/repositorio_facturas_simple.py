@@ -21,7 +21,18 @@ class RepositorioFacturas:
         fecha_hasta: Optional[date] = None,
         nivel_reclamacion: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Obtiene facturas usando SQL directo con filtros"""
+        """Obtiene facturas usando SQL directo con filtros.
+
+        Nota: requiere MSSQL (SAGE X3). En otros motores (p.ej. SQLite
+        por defecto en desarrollo) devuelve una lista vacía para evitar errores.
+        """
+
+        try:
+            bind = self.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return []
+        except Exception:
+            return []
         
         query = """
         SELECT TYP_0 as tipo, ACCNUM_0 as asiento, NUM_0 as nombre_factura, CPY_0 as sociedad, FCY_0 as planta, 

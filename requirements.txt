@@ -7,4 +7,6 @@ pydantic-settings
 python-dotenv
 pytest
 pytest-mock 
- 
+
+msal
+PyJWT
