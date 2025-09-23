@@ -33,9 +33,15 @@ def _build_msal_app():
     )
 
 
-def _build_scopes():
-    # Basic OIDC scopes; extend with Microsoft Graph if needed.
-    return ["openid", "profile", "email", "offline_access"]
+def _auth_scopes():
+    """Scopes for the authorize request (OIDC + basic Graph)."""
+    # Avoid 'email' which can trigger reserved scope errors. Graph provides email in profile.
+    return ["openid", "profile", "offline_access", "User.Read"]
+
+
+def _token_scopes():
+    """Scopes for the token request (must NOT include reserved OIDC scopes)."""
+    return ["User.Read"]
 
 
 @router.get("/login")
@@ -59,7 +65,7 @@ def login(next: Optional[str] = None):
         "response_type": "code",
         "redirect_uri": redirect_uri,
         "response_mode": "query",
-        "scope": " ".join(_build_scopes()),
+        "scope": " ".join(_auth_scopes()),
         "state": next or get_frontend_base_url(),
         "prompt": "select_account",
     }
@@ -79,14 +85,21 @@ def auth_callback(request: Request, code: Optional[str] = None, state: Optional[
 
     app = _build_msal_app()
     redirect_uri = get_auth_redirect_uri()
-    result = app.acquire_token_by_authorization_code(
-        code=code,
-        scopes=_build_scopes(),
-        redirect_uri=redirect_uri,
-    )
+    try:
+        result = app.acquire_token_by_authorization_code(
+            code=code,
+            scopes=_token_scopes(),
+            redirect_uri=redirect_uri,
+        )
+    except Exception as e:
+        # Error típico: redirect_uri no coincide o secreto inválido
+        raise HTTPException(status_code=400, detail=f"Fallo al canjear el código en Azure AD: {e}")
 
     if "error" in result:
-        raise HTTPException(status_code=400, detail=f"AAD error: {result.get('error_description', 'unknown')}")
+        err = result.get('error')
+        desc = result.get('error_description')
+        corr = result.get('correlation_id')
+        raise HTTPException(status_code=400, detail=f"Azure AD: {err} - {desc} (correlation_id={corr})")
 
     claims = result.get("id_token_claims") or {}
     now = int(time.time())
@@ -103,8 +116,13 @@ def auth_callback(request: Request, code: Optional[str] = None, state: Optional[
     token = jwt.encode(payload, get_jwt_secret(), algorithm="HS256")
 
     # Redirect back to frontend with token as a query param.
-    frontend_return = (state or get_frontend_base_url()).rstrip("/") + "/auth/return"
-    url = f"{frontend_return}?{urlencode({'token': token})}"
+    # Compute frontend return URL; avoid duplicating /auth/return if already present in state
+    frontend_base = (state or get_frontend_base_url()).rstrip("/")
+    if frontend_base.lower().endswith("/auth/return"):
+        final_return = frontend_base
+    else:
+        final_return = f"{frontend_base}/auth/return"
+    url = f"{final_return}?{urlencode({'token': token})}"
     return RedirectResponse(url=url)
 
 
@@ -127,3 +145,15 @@ def logout():
     post_logout = get_frontend_base_url()
     url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/logout?{urlencode({'post_logout_redirect_uri': post_logout})}"
     return RedirectResponse(url=url)
+
+
+@router.get("/debug")
+def auth_debug():
+    """Quick diagnostics for Azure AD config (does not expose secrets)."""
+    return {
+        "client_id": bool(get_azure_client_id()),
+        "tenant_id": get_azure_tenant_id(),
+        "redirect_uri": get_auth_redirect_uri(),
+        "frontend_base": get_frontend_base_url(),
+        "has_client_secret": bool(get_azure_client_secret()),
+    }
