@@ -1,0 +1,16 @@
+[Unit]
+Description=CEINSA Frontend React
+After=network.target ceinsa-backend.service
+Wants=ceinsa-backend.service
+
+[Service]
+Type=simple
+User=aidevelopers
+Group=aidevelopers
+WorkingDirectory=/home/aidevelopers/CEINSA/CEINSA_FRONTEND
+ExecStart=/usr/bin/npx serve -s dist -l 8006
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -141,6 +141,16 @@ def me(authorization: Optional[str] = Header(default=None)):
 
 @router.get("/logout")
 def logout():
+    """Cierra la sesión local y redirige al login sin pasar por Azure AD."""
+    frontend_base = get_frontend_base_url()
+    # Redirigir directamente al login del frontend, sin pasar por Azure AD
+    login_url = f"{frontend_base.rstrip('/')}/login"
+    return RedirectResponse(url=login_url)
+
+
+@router.get("/logout-azure")
+def logout_azure():
+    """Cierra la sesión tanto local como en Azure AD (logout completo)."""
     tenant = get_azure_tenant_id()
     post_logout = get_frontend_base_url()
     url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/logout?{urlencode({'post_logout_redirect_uri': post_logout})}"
