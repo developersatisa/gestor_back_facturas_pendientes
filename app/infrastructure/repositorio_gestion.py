@@ -1,6 +1,9 @@
+from datetime import datetime
 from typing import List, Optional, Dict, Any
+
+from sqlalchemy import func, select, update, delete, text
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update, delete, text
+
 from app.domain.models.gestion import Consultor, ClienteConsultor
 
 
@@ -52,6 +55,8 @@ class RepositorioGestion:
             select(ClienteConsultor, Consultor)
             .join(Consultor, Consultor.id == ClienteConsultor.consultor_id)
             .where(ClienteConsultor.idcliente == idcliente)
+            .order_by(ClienteConsultor.creado_en.desc(), ClienteConsultor.id.desc())
+            .limit(1)
         )
         row = self.db.execute(stmt).first()
         if not row:
@@ -65,13 +70,24 @@ class RepositorioGestion:
         }
 
     def asignar_consultor(self, idcliente: int, consultor_id: int) -> Dict[str, Any]:
-        # upsert: si existe, actualiza; si no, crea
-        current = self.db.execute(select(ClienteConsultor).where(ClienteConsultor.idcliente == idcliente)).scalar_one_or_none()
-        if current:
-            current.consultor_id = consultor_id
-        else:
-            current = ClienteConsultor(idcliente=idcliente, consultor_id=consultor_id)
-            self.db.add(current)
+        # Crear siempre un nuevo registro para mantener histórico
+        ultimo_registro = (
+            self.db.execute(
+                select(ClienteConsultor)
+                .where(ClienteConsultor.idcliente == idcliente)
+                .order_by(ClienteConsultor.creado_en.desc(), ClienteConsultor.id.desc())
+                .limit(1)
+            )
+            .scalar_one_or_none()
+        )
+        if ultimo_registro and ultimo_registro.consultor_id == consultor_id:
+            # Ya se encuentra asignado al mismo consultor; evitar duplicar registros
+            return self.obtener_asignacion(idcliente) or {
+                "idcliente": idcliente,
+                "consultor_id": consultor_id,
+            }
+
+        self._crear_cliente_consultor(idcliente=idcliente, consultor_id=consultor_id)
         self.db.commit()
         return self.obtener_asignacion(idcliente) or {"idcliente": idcliente, "consultor_id": consultor_id}
 
@@ -82,7 +98,23 @@ class RepositorioGestion:
         return res.rowcount > 0
 
     def listar_asignaciones(self) -> List[Dict[str, Any]]:
-        stmt = select(ClienteConsultor, Consultor).join(Consultor, Consultor.id == ClienteConsultor.consultor_id)
+        subquery = (
+            select(
+                ClienteConsultor.idcliente,
+                func.max(ClienteConsultor.id).label("max_id"),
+            )
+            .group_by(ClienteConsultor.idcliente)
+            .subquery()
+        )
+        stmt = (
+            select(ClienteConsultor, Consultor)
+            .join(
+                subquery,
+                (ClienteConsultor.idcliente == subquery.c.idcliente)
+                & (ClienteConsultor.id == subquery.c.max_id),
+            )
+            .join(Consultor, Consultor.id == ClienteConsultor.consultor_id)
+        )
         rows = self.db.execute(stmt).all()
         out: List[Dict[str, Any]] = []
         for cc, c in rows:
@@ -102,6 +134,38 @@ class RepositorioGestion:
             "estado": c.estado,
             "creado_en": c.creado_en.isoformat() if c.creado_en else None,
         }
+
+    def _crear_cliente_consultor(self, *, idcliente: int, consultor_id: int) -> ClienteConsultor:
+        """Crea un registro calculando el siguiente ID valido cuando la tabla no usa IDENTITY."""
+        next_id = self._obtener_siguiente_id_cliente_consultor()
+        entity = ClienteConsultor(
+            id=next_id,
+            idcliente=idcliente,
+            consultor_id=consultor_id,
+            creado_en=datetime.utcnow(),
+        )
+        self.db.add(entity)
+        # flush para reservar el ID dentro de la transaccion actual
+        self.db.flush()
+        return entity
+
+    def _obtener_siguiente_id_cliente_consultor(self) -> int:
+        tabla = ClienteConsultor.__table__
+        nombre_completo = tabla.fullname if tabla.fullname else tabla.name
+        dialecto = getattr(getattr(self.db, "bind", None), "dialect", None)
+        if dialecto and dialecto.name == "mssql":
+            consulta = text(
+                f"SELECT ISNULL(MAX(id), 0) + 1 AS siguiente_id FROM {nombre_completo} WITH (UPDLOCK, HOLDLOCK)"
+            )
+            resultado = self.db.execute(consulta)
+            siguiente_id = resultado.scalar_one()
+        else:
+            stmt = select(func.coalesce(func.max(ClienteConsultor.id), 0) + 1)
+            resultado = self.db.execute(stmt)
+            siguiente_id = resultado.scalar_one()
+        if not isinstance(siguiente_id, int):
+            siguiente_id = int(siguiente_id or 1)
+        return max(siguiente_id, 1)
 
     # Historial de pago (tabla externa opcional, similar a gestion): dbo.facturas_cambio_pago
     # Estructura: factura_id (NVARCHAR), fecha_cambio (DATE), monto_pagado (DECIMAL, opcional), idcliente (NVARCHAR, opcional)
@@ -138,5 +202,3 @@ class RepositorioGestion:
     def obtener_historial_pago(self, *, tipo: str, asiento: str, tercero: Optional[str] = None, sociedad: Optional[str] = None) -> Optional[Dict[str, Any]]:
         factura_id = f"{str(tipo)}-{str(asiento)}"
         return self.obtener_historial_pago_por_id(factura_id)
-
-

@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, UniqueConstraint, Numeric, Text
+from sqlalchemy import Column, Integer, String, DateTime, Numeric, Text
 from app.config.database import GestionBase
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -19,16 +19,13 @@ class Consultor(GestionBase):
 class ClienteConsultor(GestionBase):
     __tablename__ = "cliente_consultor"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=False)
     idcliente = Column(Integer, nullable=False, index=True)
     # Sin clave foránea: solo referencia lógica a consultores.id
     consultor_id = Column(Integer, nullable=False, index=True)
     creado_en = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     # Relación ORM omitida para evitar crear claves foráneas en BD
-    __table_args__ = (
-        UniqueConstraint("idcliente", name="uq_cliente_unico"),
-    )
 
 
 # Nota: FacturaCambio se mapea en una base separada para evitar que create_all la cree automáticamente.

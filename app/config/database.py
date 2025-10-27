@@ -119,6 +119,7 @@ def get_gestion_db():
 def init_gestion_db(metadata):
     """Crea tablas de gestión en el engine configurado (clientes o override)."""
     metadata.create_all(bind=gestion_engine)
+    _ensure_cliente_consultor_schema()
 
 
 # Utilidades de inicialización condicional de BD (para MSSQL)
@@ -249,6 +250,78 @@ def ensure_gestion_tables():
                 pass
     except Exception:
         # No bloquear el arranque si falla
+        pass
+
+
+def _ensure_cliente_consultor_schema():
+    """
+    Ajusta la tabla cliente_consultor para que permita histórico de asignaciones.
+
+    - Crea la tabla si no existe (delegado a metadata.create_all).
+    - Elimina la constraint UNIQUE heredada (uq_cliente_unico) si persiste en MSSQL.
+    - Crea un índice no único para acelerar la búsqueda del último registro por cliente.
+    """
+    try:
+        with gestion_engine.begin() as conn:
+            dialect = conn.dialect.name
+            if dialect == 'mssql':
+                table_name = "cliente_consultor"
+                result = conn.execute(
+                    text(
+                        """
+                        SELECT s.name
+                        FROM sys.tables t
+                        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                        WHERE t.name = :table_name
+                        """
+                    ),
+                    {"table_name": table_name},
+                ).first()
+
+                if not result:
+                    # Si la tabla aún no existe la creará metadata.create_all; no hay nada que ajustar.
+                    return
+
+                schema = result[0] or 'dbo'
+                schema_prefix = f"[{schema}]." if schema else ""
+                full_qualified = f"{schema}.{table_name}" if schema else table_name
+                constraint_name = "uq_cliente_unico"
+                index_name = "IX_cliente_consultor_idcliente_creado"
+
+                # Drop legacy unique constraint if still present
+                conn.execute(text(
+                    f"""
+                    IF EXISTS (
+                        SELECT 1
+                        FROM sys.key_constraints
+                        WHERE parent_object_id = OBJECT_ID(N'{full_qualified}')
+                          AND name = N'{constraint_name}'
+                    )
+                    BEGIN
+                        ALTER TABLE {schema_prefix}[{table_name}] DROP CONSTRAINT {constraint_name};
+                    END
+                    """
+                ))
+                # Replace with a non-unique index to keep queries efficient
+                conn.execute(text(
+                    f"""
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM sys.indexes
+                        WHERE name = N'{index_name}'
+                          AND object_id = OBJECT_ID(N'{full_qualified}')
+                    )
+                    BEGIN
+                        CREATE INDEX {index_name}
+                        ON {schema_prefix}[{table_name}] (idcliente, creado_en DESC, id DESC);
+                    END
+                    """
+                ))
+            else:
+                # Para SQLite u otros motores no se requieren ajustes adicionales aquí.
+                pass
+    except Exception:
+        # Evitar que un fallo en esta migración suave bloquee el arranque
         pass
 
 
