@@ -40,12 +40,40 @@ def _log_available_odbc_drivers():
 
 # Configuración para base de datos de facturas (x3v12)
 FACTURAS_DATABASE_URL = _augment_pyodbc_url(get_db_facturas_url())
-facturas_engine = create_engine(FACTURAS_DATABASE_URL)
+facturas_engine = create_engine(
+    FACTURAS_DATABASE_URL,
+    pool_size=5,            # Pool pequeño para evitar conexiones colgadas
+    max_overflow=5,         # Overflow mínimo
+    pool_timeout=30,        # Timeout razonable
+    pool_recycle=300,       # Reciclar conexiones cada 5 minutos (muy frecuente)
+    pool_pre_ping=True,     # Verificar conexiones antes de usar
+    pool_reset_on_return='rollback',  # Rollback para limpiar transacciones
+    echo=False,             # Desactivar logging SQL
+    connect_args={
+        "timeout": 10,      # Timeout corto de conexión
+        "autocommit": False,
+        "charset": "utf8mb4"
+    }
+)
 FacturasSessionLocal = sessionmaker(bind=facturas_engine)
 
 # Configuración para base de datos de clientes (ATISA_Input)
 CLIENTES_DATABASE_URL = _augment_pyodbc_url(get_db_clientes_url())
-clientes_engine = create_engine(CLIENTES_DATABASE_URL)
+clientes_engine = create_engine(
+    CLIENTES_DATABASE_URL,
+    pool_size=5,            # Pool pequeño para evitar conexiones colgadas
+    max_overflow=5,         # Overflow mínimo
+    pool_timeout=30,        # Timeout razonable
+    pool_recycle=300,       # Reciclar conexiones cada 5 minutos (muy frecuente)
+    pool_pre_ping=True,     # Verificar conexiones antes de usar
+    pool_reset_on_return='rollback',  # Rollback para limpiar transacciones
+    echo=False,             # Desactivar logging SQL
+    connect_args={
+        "timeout": 10,      # Timeout corto de conexión
+        "autocommit": False,
+        "charset": "utf8mb4"
+    }
+)
 ClientesSessionLocal = sessionmaker(bind=clientes_engine)
 
 Base = declarative_base()
@@ -55,16 +83,36 @@ def get_facturas_db():
     db = FacturasSessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Error en sesión de facturas: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error cerrando sesión de facturas: {e}")
 
 def get_clientes_db():
     """Dependency para obtener sesión de base de datos de clientes"""
     db = ClientesSessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Error en sesión de clientes: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        db.close() 
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error cerrando sesión de clientes: {e}") 
 
 # Configuración para base de datos de historial (local, SQLite por defecto)
 HISTORIAL_DATABASE_URL = get_historial_db_url()
@@ -79,8 +127,15 @@ def get_historial_db():
     db = HistorialSessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Error en sesión de historial: {e}")
+        db.rollback()
+        raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error cerrando sesión de historial: {e}")
 
 def init_historial_db(metadata):
     """Crea tablas del historial si no existen.
@@ -98,6 +153,110 @@ def log_odbc_env_diagnostics():
     except Exception:
         pass
 
+
+def log_pool_status():
+    """Log del estado actual de los pools de conexión para diagnóstico."""
+    try:
+        # Pool de facturas
+        facturas_pool = facturas_engine.pool
+        logger.info(f"Pool Facturas - Tamaño: {facturas_pool.size()}, "
+                   f"Checked out: {facturas_pool.checkedout()}, "
+                   f"Overflow: {facturas_pool.overflow()}, "
+                   f"Checked in: {facturas_pool.checkedin()}")
+        
+        # Pool de clientes
+        clientes_pool = clientes_engine.pool
+        logger.info(f"Pool Clientes - Tamaño: {clientes_pool.size()}, "
+                   f"Checked out: {clientes_pool.checkedout()}, "
+                   f"Overflow: {clientes_pool.overflow()}, "
+                   f"Checked in: {clientes_pool.checkedin()}")
+    except Exception as e:
+        logger.warning(f"Error obteniendo estado del pool: {e}")
+
+
+def force_pool_cleanup():
+    """Fuerza la limpieza de conexiones inactivas en todos los pools."""
+    try:
+        facturas_engine.pool.recreate()
+        clientes_engine.pool.recreate()
+        logger.info("Pools de conexión recreados exitosamente")
+    except Exception as e:
+        logger.error(f"Error recreando pools: {e}")
+
+
+def cleanup_stale_connections():
+    """Limpia conexiones colgadas específicamente para MySQL/MariaDB."""
+    try:
+        # Para MySQL/MariaDB, ejecutar comandos de limpieza
+        with facturas_engine.connect() as conn:
+            # Matar conexiones inactivas (más de 5 minutos)
+            conn.execute(text("""
+                SELECT CONCAT('KILL ', id, ';') as kill_command 
+                FROM information_schema.processlist 
+                WHERE command = 'Sleep' 
+                AND time > 300 
+                AND user != 'system user'
+                AND db IS NOT NULL
+            """))
+            
+        with clientes_engine.connect() as conn:
+            conn.execute(text("""
+                SELECT CONCAT('KILL ', id, ';') as kill_command 
+                FROM information_schema.processlist 
+                WHERE command = 'Sleep' 
+                AND time > 300 
+                AND user != 'system user'
+                AND db IS NOT NULL
+            """))
+            
+        logger.info("Conexiones colgadas limpiadas exitosamente")
+    except Exception as e:
+        logger.warning(f"No se pudieron limpiar conexiones colgadas: {e}")
+
+
+def get_connection_stats():
+    """Obtiene estadísticas de conexiones activas."""
+    stats = {}
+    try:
+        with facturas_engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT 
+                    COUNT(*) as total_connections,
+                    SUM(CASE WHEN command = 'Sleep' THEN 1 ELSE 0 END) as sleeping_connections,
+                    SUM(CASE WHEN time > 300 THEN 1 ELSE 0 END) as stale_connections
+                FROM information_schema.processlist 
+                WHERE user != 'system user'
+            """))
+            row = result.fetchone()
+            stats['facturas'] = {
+                'total': row[0] if row else 0,
+                'sleeping': row[1] if row else 0,
+                'stale': row[2] if row else 0
+            }
+    except Exception as e:
+        stats['facturas'] = {'error': str(e)}
+    
+    try:
+        with clientes_engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT 
+                    COUNT(*) as total_connections,
+                    SUM(CASE WHEN command = 'Sleep' THEN 1 ELSE 0 END) as sleeping_connections,
+                    SUM(CASE WHEN time > 300 THEN 1 ELSE 0 END) as stale_connections
+                FROM information_schema.processlist 
+                WHERE user != 'system user'
+            """))
+            row = result.fetchone()
+            stats['clientes'] = {
+                'total': row[0] if row else 0,
+                'sleeping': row[1] if row else 0,
+                'stale': row[2] if row else 0
+            }
+    except Exception as e:
+        stats['clientes'] = {'error': str(e)}
+    
+    return stats
+
 """
 Gestión (consultores, asignaciones y registro de facturas)
 - Siempre usa la misma BD que clientes (ATISA_Input)
@@ -112,8 +271,15 @@ def get_gestion_db():
     db = GestionSessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Error en sesión de gestión: {e}")
+        db.rollback()
+        raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error cerrando sesión de gestión: {e}")
 
 
 def init_gestion_db(metadata):
