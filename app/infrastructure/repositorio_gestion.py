@@ -66,12 +66,24 @@ class RepositorioGestion:
 
     def asignar_consultor(self, idcliente: int, consultor_id: int) -> Dict[str, Any]:
         # upsert: si existe, actualiza; si no, crea
-        current = self.db.execute(select(ClienteConsultor).where(ClienteConsultor.idcliente == idcliente)).scalar_one_or_none()
+        stmt = (
+            select(ClienteConsultor)
+            .where(ClienteConsultor.idcliente == idcliente)
+            .order_by(ClienteConsultor.id.desc())
+        )
+        rows = self.db.execute(stmt).scalars().all()
+        current = rows[0] if rows else None
+
+        # Depura entradas duplicadas antiguas para el mismo cliente
+        for duplicate in rows[1:]:
+            self.db.delete(duplicate)
+
         if current:
             current.consultor_id = consultor_id
         else:
             current = ClienteConsultor(idcliente=idcliente, consultor_id=consultor_id)
             self.db.add(current)
+
         self.db.commit()
         return self.obtener_asignacion(idcliente) or {"idcliente": idcliente, "consultor_id": consultor_id}
 
