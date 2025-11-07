@@ -1,4 +1,4 @@
-# 🧾 Sistema de Gestión de Facturas Pendientes - ATISA
+﻿# 🧾 Sistema de Gestión de Facturas Pendientes - ATISA
 
 ## 📋 Descripción del Proyecto
 
@@ -171,6 +171,15 @@ DATABASE_URL_CLIENTES=your_database_connection_string
 API_HOST=0.0.0.0
 API_PORT=8000
 DEBUG=True
+
+# Notificador de consultores (opcional)
+NOTIFIER_SMTP_HOST=smtp.servidor.com
+NOTIFIER_SMTP_PORT=587
+NOTIFIER_SMTP_USER=usuario
+NOTIFIER_SMTP_PASSWORD=clave
+NOTIFIER_SMTP_FROM=notificaciones@dominio.com
+NOTIFIER_SMTP_STARTTLS=1
+
 ```
 
 ### 5. Ejecutar la Aplicación
@@ -297,6 +306,14 @@ DEBUG=False
 LOG_LEVEL=WARNING
 DATABASE_URL_FACTURAS=production_connection_string
 DATABASE_URL_CLIENTES=production_connection_string
+# Notificador de consultores (opcional)
+NOTIFIER_SMTP_HOST=smtp.servidor.com
+NOTIFIER_SMTP_PORT=587
+NOTIFIER_SMTP_USER=usuario
+NOTIFIER_SMTP_PASSWORD=clave
+NOTIFIER_SMTP_FROM=notificaciones@dominio.com
+NOTIFIER_SMTP_STARTTLS=1
+
 ```
 
 ### Configuración del Servidor
@@ -375,3 +392,20 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 - Etiqueta de sociedad en respuestas de facturas: se añade `sociedad_nombre` junto a `sociedad`.
 - Nombre de factura: se añade `nombre_factura` mapeado desde `NUM_0` en X3.
 - Solo se consideran facturas vencidas en consultas: DUDDAT_0 < GETDATE().
+
+### Automatización de avisos por correo
+
+- Script CLI dedicado `facturas_backend/scripts/enviar_acciones_pendientes.py` que emite las acciones cuya fecha de aviso ya venció. Carga las variables de entorno vía `.env`, reutiliza `RepositorioRegistroFacturas.enviar_pendientes` y deja trazas legibles.
+- Ejecución manual (útil para diagnóstico):
+  ```bash
+  cd facturas_backend
+  source venv/bin/activate
+  python scripts/enviar_acciones_pendientes.py --log-level DEBUG
+  ```
+- Programación con cron (ejemplo cada 5 minutos, como root):
+  ```cron
+  */5 * * * * cd /ruta/al/proyecto/facturas_backend && /usr/bin/env bash -lc 'source /ruta/al/venv/bin/activate && python scripts/enviar_acciones_pendientes.py >> /var/log/facturas_acciones.log 2>&1'
+  ```
+  - Asegúrate de `chmod +x` al script y de crear el log (`sudo touch /var/log/facturas_acciones.log`).
+  - Define las variables SMTP (`NOTIFIER_SMTP_*`) en un entorno visible para cron (`/etc/environment` o similar).
+

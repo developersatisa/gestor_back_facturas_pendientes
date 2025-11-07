@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import func, select, update, delete, text
 from sqlalchemy.orm import Session
 
-from app.domain.models.gestion import Consultor, ClienteConsultor
+from app.domain.models.gestion import Consultor, ClienteConsultor, AccionFactura
 
 
 class RepositorioGestion:
@@ -19,18 +19,35 @@ class RepositorioGestion:
         rows = self.db.execute(stmt).scalars().all()
         return [self._consultor_to_dict(c) for c in rows]
 
-    def crear_consultor(self, nombre: str, estado: str = 'activo') -> Dict[str, Any]:
-        c = Consultor(nombre=nombre, estado=estado)
+    def crear_consultor(
+        self,
+        nombre: str,
+        estado: str = 'activo',
+        email: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        c = Consultor(
+            nombre=nombre,
+            estado=estado,
+            email=self._normalizar_campo(email),
+        )
         self.db.add(c)
         self.db.commit()
         self.db.refresh(c)
         return self._consultor_to_dict(c)
 
     def actualizar_consultor(self, consultor_id: int, **fields) -> Optional[Dict[str, Any]]:
+        cleaned: Dict[str, Any] = {}
+        for key, value in fields.items():
+            if key in {"email"}:
+                if isinstance(value, str):
+                    value = value.strip()
+                cleaned[key] = value or None
+            else:
+                cleaned[key] = value
         stmt = (
             update(Consultor)
             .where(Consultor.id == consultor_id)
-            .values(**fields)
+            .values(**cleaned)
             .execution_options(synchronize_session="fetch")
         )
         res = self.db.execute(stmt)
@@ -67,6 +84,7 @@ class RepositorioGestion:
             "consultor_id": c.id,
             "consultor_nombre": c.nombre,
             "consultor_estado": c.estado,
+            "consultor_email": c.email,
         }
 
     def asignar_consultor(self, idcliente: int, consultor_id: int) -> Dict[str, Any]:
@@ -88,6 +106,22 @@ class RepositorioGestion:
             }
 
         self._crear_cliente_consultor(idcliente=idcliente, consultor_id=consultor_id)
+        # Actualizar acciones existentes para reflejar el nuevo consultor en el campo usuario
+        try:
+            c = self.db.get(Consultor, consultor_id)
+            nuevo_nombre = c.nombre if c else None
+            if nuevo_nombre:
+                from sqlalchemy import update
+                upd = (
+                    update(AccionFactura)
+                    .where(AccionFactura.idcliente == idcliente)
+                    .values(usuario=nuevo_nombre)
+                    .execution_options(synchronize_session="fetch")
+                )
+                self.db.execute(upd)
+        except Exception:
+            # No bloquear la asignación si falla la actualización de acciones
+            pass
         self.db.commit()
         return self.obtener_asignacion(idcliente) or {"idcliente": idcliente, "consultor_id": consultor_id}
 
@@ -123,6 +157,7 @@ class RepositorioGestion:
                 "consultor_id": c.id,
                 "consultor_nombre": c.nombre,
                 "consultor_estado": c.estado,
+                "consultor_email": c.email,
             })
         return out
 
@@ -132,8 +167,18 @@ class RepositorioGestion:
             "id": c.id,
             "nombre": c.nombre,
             "estado": c.estado,
+            "email": c.email,
             "creado_en": c.creado_en.isoformat() if c.creado_en else None,
         }
+
+    @staticmethod
+    def _normalizar_campo(valor: Optional[str]) -> Optional[str]:
+        if valor is None:
+            return None
+        if isinstance(valor, str):
+            limpio = valor.strip()
+            return limpio or None
+        return str(valor) or None
 
     def _crear_cliente_consultor(self, *, idcliente: int, consultor_id: int) -> ClienteConsultor:
         """Crea un registro calculando el siguiente ID valido cuando la tabla no usa IDENTITY."""

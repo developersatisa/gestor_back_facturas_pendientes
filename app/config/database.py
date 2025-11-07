@@ -8,6 +8,11 @@ from app.config.settings import (
     get_historial_db_url,
     get_odbc_driver_name,
 )
+from app.infrastructure.database_migrations import (
+    initialize_gestion_tables,
+    create_cliente_consultor_indexes,
+    initialize_facturas_pago_table,
+)
 import logging
 
 logger = logging.getLogger("db")
@@ -283,9 +288,19 @@ def get_gestion_db():
 
 
 def init_gestion_db(metadata):
-    """Crea tablas de gestión en el engine configurado (clientes o override)."""
-    metadata.create_all(bind=gestion_engine)
-    _ensure_cliente_consultor_schema()
+    """
+    Crea tablas de gestión usando SQLAlchemy metadata y luego aplica migraciones.
+    
+    Args:
+        metadata: SQLAlchemy metadata del GestionBase
+    """
+    try:
+        if gestion_engine.dialect.name == 'mssql':
+            metadata.create_all(bind=gestion_engine)
+            _ensure_cliente_consultor_schema()
+    except Exception:
+        # No bloquear arranque
+        pass
 
 
 # Utilidades de inicialización condicional de BD (para MSSQL)
@@ -328,210 +343,47 @@ def ensure_gestion_database():
 
 
 def ensure_gestion_columns():
-    """Añade columnas nuevas si faltan (idcliente en acciones y cambios).
-
-    Soporta MSSQL y SQLite. Silencioso si no aplica o ya existen.
     """
-    try:
-        with gestion_engine.begin() as conn:
-            # Detectar dialecto
-            dialect = conn.dialect.name
-            if dialect == 'mssql':
-                # factura_acciones.idcliente
-                conn.execute(text("IF COL_LENGTH('dbo.factura_acciones','idcliente') IS NULL ALTER TABLE dbo.factura_acciones ADD idcliente INT NULL;"))
-                # Limpieza en facturas_cambio_pago: asegurar columna monto_pagado y eliminar creado_en si existe
-                # facturas_cambio_pago.monto_pagado (si existe la tabla)
-                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','monto_pagado') IS NULL ALTER TABLE dbo.facturas_cambio_pago ADD monto_pagado DECIMAL(18,2) NULL;"))
-                # facturas_cambio_pago.idcliente (guardar BPR_0 como NVARCHAR)
-                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','idcliente') IS NULL ALTER TABLE dbo.facturas_cambio_pago ADD idcliente NVARCHAR(50) NULL;"))
-                # Eliminar default constraint y columna creado_en si existe
-                conn.execute(text("IF 1=0 AND OBJECT_ID('dbo.facturas_cambio_pago','U') IS NOT NULL AND COL_LENGTH('dbo.facturas_cambio_pago','creado_en') IS NOT NULL BEGIN IF OBJECT_ID('DF_facturas_cambio_pago_creado','D') IS NOT NULL ALTER TABLE dbo.facturas_cambio_pago DROP CONSTRAINT DF_facturas_cambio_pago_creado; ALTER TABLE dbo.facturas_cambio_pago DROP COLUMN creado_en; END"))
-            else:
-                # SQLite u otros: intentar ALTER TABLE ADD COLUMN en factura_acciones si no existe
-                try:
-                    conn.execute(text("ALTER TABLE factura_acciones ADD COLUMN idcliente INTEGER"))
-                except Exception:
-                    pass
-                # Intentar añadir columnas en facturas_cambio_pago si existe
-                try:
-                    conn.execute(text("/* disabled */ SELECT 1"))
-                except Exception:
-                    pass
-                try:
-                    conn.execute(text("/* disabled */ SELECT 1"))
-                except Exception:
-                    pass
-    except Exception:
-        # No bloquear arranque por migración suave
-        pass
+    DEPRECATED: Esta función se mantiene por compatibilidad pero la lógica
+    se ha movido a database_migrations.py
+    
+    La migración de columnas ahora se hace automáticamente en initialize_gestion_tables().
+    """
+    # La lógica se movió a database_migrations.migrate_consultores_columns()
+    # y database_migrations.migrate_factura_acciones_columns()
+    pass
 
 
 def ensure_gestion_tables():
-    """Crea explícitamente tablas de acciones y cambios en MSSQL si no existen.
-
-    En otros motores se confía en SQLAlchemy create_all.
     """
-    try:
-        with gestion_engine.begin() as conn:
-            dialect = conn.dialect.name
-            if dialect == 'mssql':
-                # Tabla factura_acciones
-                conn.execute(text(
-                    """
-                    IF OBJECT_ID(N'dbo.factura_acciones', N'U') IS NULL
-                    BEGIN
-                        CREATE TABLE dbo.factura_acciones (
-                            id INT IDENTITY(1,1) PRIMARY KEY,
-                            idcliente INT NULL,
-                            tercero NVARCHAR(50) NOT NULL,
-                            tipo NVARCHAR(10) NOT NULL,
-                            asiento NVARCHAR(50) NOT NULL,
-                            accion_tipo NVARCHAR(50) NOT NULL,
-                            descripcion NVARCHAR(MAX) NULL,
-                            aviso DATETIME2 NULL,
-                            usuario NVARCHAR(100) NULL,
-                            creado_en DATETIME2 NOT NULL CONSTRAINT DF_factura_acciones_creado DEFAULT(SYSDATETIME())
-                        );
-                    END
-                    """
-                ))
-                # Tabla facturas_cambio_pago (historial de pagos de facturas, mínima)
-                conn.execute(text(
-                    """
-                    -- deshabilitado: creación movida a x3v12.ATISAINT
-                    IF 1=0 AND OBJECT_ID(N'dbo.facturas_cambio_pago', N'U') IS NULL
-                    BEGIN
-                        CREATE TABLE dbo.facturas_cambio_pago (
-                            id INT IDENTITY(1,1) PRIMARY KEY,
-                            factura_id NVARCHAR(64) NOT NULL,
-                            fecha_cambio DATE NOT NULL,
-                            monto_pagado DECIMAL(18,2) NULL,
-                            idcliente NVARCHAR(50) NULL
-                        );
-                    END
-                    """
-                ))
-            else:
-                # No crear explícitamente en otros motores aquí; se gestionará vía ORM/migraciones si aplica.
-                pass
-    except Exception:
-        # No bloquear el arranque si falla
-        pass
+    Crea explícitamente tablas de gestión en MSSQL si no existen.
+
+    DEPRECATED: Esta función ahora delega a database_migrations.initialize_gestion_tables()
+    para mantener el código organizado.
+    """
+    initialize_gestion_tables(gestion_engine)
 
 
 def _ensure_cliente_consultor_schema():
     """
     Ajusta la tabla cliente_consultor para que permita histórico de asignaciones.
 
-    - Crea la tabla si no existe (delegado a metadata.create_all).
-    - Elimina la constraint UNIQUE heredada (uq_cliente_unico) si persiste en MSSQL.
-    - Crea un índice no único para acelerar la búsqueda del último registro por cliente.
+    DEPRECATED: Esta función ahora delega a database_migrations.create_cliente_consultor_indexes()
+    para mantener el código organizado.
     """
     try:
         with gestion_engine.begin() as conn:
-            dialect = conn.dialect.name
-            if dialect == 'mssql':
-                table_name = "cliente_consultor"
-                result = conn.execute(
-                    text(
-                        """
-                        SELECT s.name
-                        FROM sys.tables t
-                        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-                        WHERE t.name = :table_name
-                        """
-                    ),
-                    {"table_name": table_name},
-                ).first()
-
-                if not result:
-                    # Si la tabla aún no existe la creará metadata.create_all; no hay nada que ajustar.
-                    return
-
-                schema = result[0] or 'dbo'
-                schema_prefix = f"[{schema}]." if schema else ""
-                full_qualified = f"{schema}.{table_name}" if schema else table_name
-                constraint_name = "uq_cliente_unico"
-                index_name = "IX_cliente_consultor_idcliente_creado"
-
-                # Drop legacy unique constraint if still present
-                conn.execute(text(
-                    f"""
-                    IF EXISTS (
-                        SELECT 1
-                        FROM sys.key_constraints
-                        WHERE parent_object_id = OBJECT_ID(N'{full_qualified}')
-                          AND name = N'{constraint_name}'
-                    )
-                    BEGIN
-                        ALTER TABLE {schema_prefix}[{table_name}] DROP CONSTRAINT {constraint_name};
-                    END
-                    """
-                ))
-                # Replace with a non-unique index to keep queries efficient
-                conn.execute(text(
-                    f"""
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM sys.indexes
-                        WHERE name = N'{index_name}'
-                          AND object_id = OBJECT_ID(N'{full_qualified}')
-                    )
-                    BEGIN
-                        CREATE INDEX {index_name}
-                        ON {schema_prefix}[{table_name}] (idcliente, creado_en DESC, id DESC);
-                    END
-                    """
-                ))
-            else:
-                # Para SQLite u otros motores no se requieren ajustes adicionales aquí.
-                pass
+            if gestion_engine.dialect.name == 'mssql':
+                create_cliente_consultor_indexes(conn)
     except Exception:
-        # Evitar que un fallo en esta migración suave bloquee el arranque
         pass
 
 
 def ensure_facturas_pago_table():
     """
-    Crea el esquema ATISAINT (si no existe) y la tabla ATISAINT.facturas_cambio_pago con columnas:
-    - id INT IDENTITY PK
-    - factura_id NVARCHAR(64) NOT NULL (SIN restricción UNIQUE para permitir múltiples pagos)
-    - fecha_cambio DATE NOT NULL
-    - monto_pagado DECIMAL(18,2) NULL
-    - idcliente NVARCHAR(50) NULL
-
-    En motores no MSSQL, intenta crear una tabla equivalente sin esquema.
+    Crea el esquema ATISAINT (si no existe) y la tabla ATISAINT.facturas_cambio_pago.
+    
+    DEPRECATED: Esta función ahora delega a database_migrations.initialize_facturas_pago_table()
+    para mantener el código organizado.
     """
-    try:
-        with facturas_engine.begin() as conn:
-            dialect = conn.dialect.name
-            if dialect == 'mssql':
-                # Crear esquema ATISAINT si no existe
-                conn.execute(text("IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'ATISAINT') EXEC('CREATE SCHEMA ATISAINT');"))
-                
-                # Crear tabla solo si no existe (sin restricción UNIQUE)
-                conn.execute(text(
-                    """
-                    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'ATISAINT.facturas_cambio_pago') AND type in (N'U'))
-                    BEGIN
-                        CREATE TABLE ATISAINT.facturas_cambio_pago (
-                            id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-                            factura_id NVARCHAR(64) NOT NULL,
-                            fecha_cambio DATE NOT NULL,
-                            monto_pagado DECIMAL(18,2) NULL,
-                            idcliente NVARCHAR(50) NULL
-                        );
-                    END
-                    """
-                ))
-                
-                # Crear índice para mejorar consultas por factura_id (solo si no existe)
-                conn.execute(text("""
-                    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_facturas_cambio_pago_factura_id' AND object_id = OBJECT_ID('ATISAINT.facturas_cambio_pago'))
-                    BEGIN
-                        CREATE INDEX IX_facturas_cambio_pago_factura_id ON ATISAINT.facturas_cambio_pago(factura_id);
-                    END
-                """))
-    except Exception:
-        # No bloquear arranque
-        pass
+    initialize_facturas_pago_table(facturas_engine)

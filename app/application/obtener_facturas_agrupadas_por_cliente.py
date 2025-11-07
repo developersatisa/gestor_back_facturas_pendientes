@@ -25,9 +25,10 @@ class ObtenerFacturasAgrupadasPorCliente:
         logger.info("Iniciando obtención de facturas agrupadas por cliente...")
         
         # Consulta para obtener facturas agrupadas por cliente (condiciones solicitadas)
-        # - SAC_0 = '4300'
+        # - SAC_0 en ('4300','4302')
         # - Excluir tipos 'AA' y 'ZZ'
         # - Solo vencidas a hoy (DUDDAT_0 < GETDATE())
+        # IMPORTANTE: Usar las mismas condiciones que el Excel para mantener consistencia
         query = """
         SELECT 
           BPR_0 as tercero,
@@ -51,11 +52,16 @@ class ObtenerFacturasAgrupadasPorCliente:
         FROM 
           x3v12.ATISAINT.GACCDUDATE
         WHERE 
-          SAC_0 = '4300'
+          SAC_0 IN ('4300','4302')
           AND TYP_0 NOT IN ('AA', 'ZZ')
           AND DUDDAT_0 < GETDATE()
           AND FLGCLE_0 <> 2
           AND CPY_0 IN ('S005','S001','S010')
+          -- Misma condición que el Excel: solo incluir facturas con saldo pendiente o abonos
+          AND (
+            (SNS_0 = -1 OR FLGCLE_0 = -1 OR AMTCUR_0 < 0) OR
+            ((FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0)
+          )
 
         """
         
@@ -81,15 +87,20 @@ class ObtenerFacturasAgrupadasPorCliente:
         """
 
         # Consulta auxiliar: sociedades por cliente (CPY_0) con saldo pendiente
+        # IMPORTANTE: Usar las mismas condiciones que el Excel y la consulta principal
         query_sociedades = """
         SELECT BPR_0 as tercero, CPY_0 as sociedad
         FROM x3v12.ATISAINT.GACCDUDATE
-        WHERE SAC_0 = '4300'
+        WHERE SAC_0 IN ('4300','4302')
           AND TYP_0 NOT IN ('AA','ZZ')
           AND DUDDAT_0 < GETDATE()
           AND FLGCLE_0 <> 2
-          AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0
           AND CPY_0 IN ('S005','S001','S010')
+          -- Misma condición que el Excel: solo incluir facturas con saldo pendiente o abonos
+          AND (
+            (SNS_0 = -1 OR FLGCLE_0 = -1 OR AMTCUR_0 < 0) OR
+            ((FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0)
+          )
         GROUP BY BPR_0, CPY_0
         """
         
@@ -170,6 +181,8 @@ class ObtenerFacturasAgrupadasPorCliente:
                     "idcliente": tercero_original,
                     "nombre_cliente": datos_cliente.get('razsoc', 'Sin nombre') if datos_cliente else 'Sin nombre',
                     "cif_cliente": datos_cliente.get('cif', 'Sin CIF') if datos_cliente else 'Sin CIF',
+                    "cif_empresa": datos_cliente.get('cif_empresa', 'Sin CIF empresa') if datos_cliente else 'Sin CIF empresa',
+                    "cif_factura": datos_cliente.get('cif_factura', 'Sin CIF facturación') if datos_cliente else 'Sin CIF facturación',
                     "numero_facturas": row.total_facturas,
                     "monto_debe": monto_pendiente,
                     "estado": estado,

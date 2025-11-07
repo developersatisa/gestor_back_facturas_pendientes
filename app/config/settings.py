@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # Carga variables desde .env si existe
@@ -24,6 +25,20 @@ def _get_first_env(keys: list[str], default: str) -> str:
         if v:
             return v
     return default
+
+
+def _as_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
 
 
 @lru_cache()
@@ -114,6 +129,20 @@ def get_azure_client_secret() -> str:
 
 
 @lru_cache()
+def get_azure_allowed_domains() -> List[str]:
+    raw = _get_first_env([
+        "AZURE_ALLOWED_DOMAINS",
+        "GRAPH_ALLOWED_DOMAINS",
+    ], "")
+    dominios: List[str] = []
+    for parte in raw.split(","):
+        valor = parte.strip().lower()
+        if valor:
+            dominios.append(valor)
+    return dominios
+
+
+@lru_cache()
 def get_frontend_base_url() -> str:
     return _get_first_env([
         "FRONTEND_BASE_URL",
@@ -148,3 +177,48 @@ def get_jwt_expires_seconds() -> int:
 @lru_cache()
 def get_odbc_driver_name() -> str:
     return DEFAULT_ODBC_DRIVER
+
+
+# Notificador de consultores (SMTP / Teams)
+@lru_cache()
+def get_notifier_smtp_host() -> str:
+    return _get_first_env(["NOTIFIER_SMTP_HOST", "SMTP_HOST"], "")
+
+
+@lru_cache()
+def get_notifier_smtp_port() -> int:
+    value = _get_first_env(["NOTIFIER_SMTP_PORT", "SMTP_PORT"], "587")
+    try:
+        return int(value)
+    except Exception:
+        return 587
+
+
+@lru_cache()
+def get_notifier_smtp_user() -> str:
+    return _get_first_env(["NOTIFIER_SMTP_USER", "SMTP_USER", "SMTP_USERNAME"], "")
+
+
+@lru_cache()
+def get_notifier_smtp_password() -> str:
+    return _get_first_env(["NOTIFIER_SMTP_PASSWORD", "SMTP_PASSWORD"], "")
+
+
+@lru_cache()
+def get_notifier_smtp_from() -> str:
+    sender = _get_first_env(["NOTIFIER_SMTP_FROM", "SMTP_FROM"], "")
+    if sender:
+        return sender
+    user = get_notifier_smtp_user()
+    return user or ""
+
+
+@lru_cache()
+def get_notifier_smtp_starttls() -> bool:
+    value = _get_first_env(["NOTIFIER_SMTP_STARTTLS", "SMTP_STARTTLS"], "1")
+    return _as_bool(value, default=True)
+
+
+@lru_cache()
+def get_notifier_teams_sender_user_id() -> str:
+    return _get_first_env(["NOTIFIER_TEAMS_SENDER_USER_ID"], "")

@@ -33,7 +33,7 @@ class ObtenerEstadisticasFacturas:
                     "facturas_mas_vencidas": [],
                     "filtros_aplicados": {
                         "tipo_excluido": ["AA", "ZZ"],
-                        "colectivo": "4300",
+                        "colectivo": ["4300", "4302"],
                         "vencidas": True,
                         "flgcle_excluir": 2,
                     },
@@ -49,7 +49,7 @@ class ObtenerEstadisticasFacturas:
                 "facturas_mas_vencidas": [],
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
-                    "colectivo": "4300",
+                    "colectivo": ["4300", "4302"],
                     "vencidas": True,
                     "flgcle_excluir": 2,
                 },
@@ -57,12 +57,14 @@ class ObtenerEstadisticasFacturas:
             }
 
         # Totales unificados (empresas, facturas, monto neto)
+        # IMPORTANTE: Incluye filtro de sociedades para que coincida con el Excel
         query_totales = """
         WITH base AS (
           SELECT BPR_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
           FROM x3v12.ATISAINT.GACCDUDATE
-          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+          WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
             AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+            AND CPY_0 IN ('S005','S001','S010')
         ),
         agg AS (
           SELECT
@@ -87,7 +89,7 @@ class ObtenerEstadisticasFacturas:
         WITH base AS (
           SELECT BPR_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
           FROM x3v12.ATISAINT.GACCDUDATE
-          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+          WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
             AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
         )
         SELECT TOP 50
@@ -112,7 +114,7 @@ class ObtenerEstadisticasFacturas:
         WITH base AS (
           SELECT CPY_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
           FROM x3v12.ATISAINT.GACCDUDATE
-          WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+          WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
             AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
         )
         SELECT
@@ -145,7 +147,7 @@ class ObtenerEstadisticasFacturas:
           ISNULL(PAYCUR_0,0) as pago,
           (AMTCUR_0 - ISNULL(PAYCUR_0,0)) as pendiente
         FROM x3v12.ATISAINT.GACCDUDATE
-        WHERE SAC_0='4300' AND TYP_0 NOT IN ('AA','ZZ')
+        WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
           AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
           AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0
         ORDER BY DATEDIFF(day, DUDDAT_0, GETDATE()) DESC;
@@ -235,7 +237,7 @@ class ObtenerEstadisticasFacturas:
                 "facturas_mas_vencidas": facturas_vencidas,
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
-                    "colectivo": "4300",
+                    "colectivo": ["4300", "4302"],
                     "vencidas": True,
                     "flgcle_excluir": 2
                 },

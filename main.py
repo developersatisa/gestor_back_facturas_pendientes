@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, Depends
 from fastapi.responses import HTMLResponse
 from typing import Optional
@@ -7,6 +9,7 @@ from app.interfaces.facturas_controller import router as facturas_router
 from app.interfaces.historial_controller import router as historial_router
 from app.interfaces.consultores_controller import router as consultores_router
 from app.interfaces.registro_facturas_controller import router as registro_facturas_router
+from app.interfaces.seguimiento_acciones_controller import router as seguimiento_acciones_router
 from app.auth.routes import router as auth_router
 from app.config.database import (
     init_historial_db,
@@ -51,6 +54,7 @@ app.include_router(facturas_router)
 app.include_router(historial_router)
 app.include_router(consultores_router)
 app.include_router(registro_facturas_router)
+app.include_router(seguimiento_acciones_router)
 app.include_router(auth_router)
 
 # Fallback para /auth/return cuando el frontend BrowserRouter
