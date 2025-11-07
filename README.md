@@ -17,7 +17,6 @@ El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separaci�
 │   ├── 📁 interfaces/          # Controladores y endpoints de la API
 │   └── 📁 config/              # Configuración de base de datos y settings
 ├── 🧪 tests/                   # Pruebas unitarias y de integración
-├── 🐳 Dockerfile               # Configuración para contenedores Docker
 ├── 📋 requirements.txt          # Dependencias del proyecto
 └── 🚀 main.py                  # Punto de entrada de la aplicación
 ```
@@ -36,7 +35,6 @@ El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separaci�
 - **SQL Server**: Base de datos corporativa de ATISA
 
 ### DevOps & Testing
-- **Docker**: Contenedorización de la aplicación
 - **Pytest**: Framework de testing
 - **Uvicorn**: Servidor ASGI para FastAPI
 
@@ -141,7 +139,6 @@ class Factura(BaseModel):
 ### Prerrequisitos
 - Python 3.11 o superior
 - MariaDB/MySQL o SQL Server
-- Docker (opcional)
 
 ### 1. Clonar el Repositorio
 ```bash
@@ -174,6 +171,15 @@ DATABASE_URL_CLIENTES=your_database_connection_string
 API_HOST=0.0.0.0
 API_PORT=8000
 DEBUG=True
+
+# Notificador de consultores (opcional)
+NOTIFIER_SMTP_HOST=smtp.servidor.com
+NOTIFIER_SMTP_PORT=587
+NOTIFIER_SMTP_USER=usuario
+NOTIFIER_SMTP_PASSWORD=clave
+NOTIFIER_SMTP_FROM=notificaciones@dominio.com
+NOTIFIER_SMTP_STARTTLS=1
+
 ```
 
 ### 5. Ejecutar la Aplicación
@@ -185,32 +191,6 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## 🐳 Ejecución con Docker
-
-### Construir la Imagen
-```bash
-docker build -t gestor-facturas-backend .
-```
-
-### Ejecutar el Contenedor
-```bash
-docker run -d -p 8000:8000 --name gestor-facturas gestor-facturas-backend
-```
-
-### Con Docker Compose (recomendado)
-```yaml
-version: '3.8'
-services:
-  backend:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL_FACTURAS=${DATABASE_URL_FACTURAS}
-      - DATABASE_URL_CLIENTES=${DATABASE_URL_CLIENTES}
-    volumes:
-      - ./logs:/app/logs
-```
 
 ## 🧪 Testing
 
@@ -326,6 +306,14 @@ DEBUG=False
 LOG_LEVEL=WARNING
 DATABASE_URL_FACTURAS=production_connection_string
 DATABASE_URL_CLIENTES=production_connection_string
+# Notificador de consultores (opcional)
+NOTIFIER_SMTP_HOST=smtp.servidor.com
+NOTIFIER_SMTP_PORT=587
+NOTIFIER_SMTP_USER=usuario
+NOTIFIER_SMTP_PASSWORD=clave
+NOTIFIER_SMTP_FROM=notificaciones@dominio.com
+NOTIFIER_SMTP_STARTTLS=1
+
 ```
 
 ### Configuración del Servidor
@@ -384,7 +372,6 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 - ✅ Arquitectura limpia y escalable
 - ✅ Documentación completa
 - ✅ Tests unitarios
-- ✅ Configuración Docker
 
 ---
 **Desarrollado por el equipo de ATISA**
@@ -405,3 +392,20 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 - Etiqueta de sociedad en respuestas de facturas: se añade `sociedad_nombre` junto a `sociedad`.
 - Nombre de factura: se añade `nombre_factura` mapeado desde `NUM_0` en X3.
 - Solo se consideran facturas vencidas en consultas: DUDDAT_0 < GETDATE().
+
+### Automatización de avisos por correo
+
+- Script CLI dedicado `facturas_backend/scripts/enviar_acciones_pendientes.py` que emite las acciones cuya fecha de aviso ya venció. Carga las variables de entorno vía `.env`, reutiliza `RepositorioRegistroFacturas.enviar_pendientes` y deja trazas legibles.
+- Ejecución manual (útil para diagnóstico):
+  ```bash
+  cd facturas_backend
+  source venv/bin/activate
+  python scripts/enviar_acciones_pendientes.py --log-level DEBUG
+  ```
+- Programación con cron (ejemplo cada 5 minutos, como root):
+  ```cron
+  */5 * * * * cd /ruta/al/proyecto/facturas_backend && /usr/bin/env bash -lc 'source /ruta/al/venv/bin/activate && python scripts/enviar_acciones_pendientes.py >> /var/log/facturas_acciones.log 2>&1'
+  ```
+  - Asegúrate de `chmod +x` al script y de crear el log (`sudo touch /var/log/facturas_acciones.log`).
+  - Define las variables SMTP (`NOTIFIER_SMTP_*`) en un entorno visible para cron (`/etc/environment` o similar).
+
