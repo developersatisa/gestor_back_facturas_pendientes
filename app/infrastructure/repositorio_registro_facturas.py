@@ -1,5 +1,5 @@
-﻿from typing import List, Optional, Dict, Any
-from datetime import datetime
+﻿from typing import List, Optional, Dict, Any, Iterable, Set
+from datetime import datetime, date
 import logging
 
 from sqlalchemy.orm import Session
@@ -166,29 +166,248 @@ class RepositorioRegistroFacturas:
         return True
 
     # Envío programado de acciones
-    def listar_pendientes_envio(self, *, fecha_iso: Optional[str] = None) -> List[AccionFactura]:
-        fecha = None
-        if fecha_iso:
+    def _parse_fecha(self, valor: Optional[str]) -> Optional[date]:
+        if not valor:
+            return None
             for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
                 try:
-                    fecha = datetime.strptime(fecha_iso, fmt).date()
-                    break
+                return datetime.strptime(valor, fmt).date()
                 except ValueError:
                     continue
-        if fecha is None:
-            fecha = datetime.utcnow().date()
+        return None
+
+    def listar_pendientes_envio(
+        self,
+        *,
+        fecha_iso: Optional[str] = None,
+        fecha_desde_iso: Optional[str] = None,
+        estados_excluidos: Optional[Iterable[str]] = None,
+    ) -> List[AccionFactura]:
+        fecha_limite = self._parse_fecha(fecha_iso) or datetime.utcnow().date()
+        fecha_desde = self._parse_fecha(fecha_desde_iso)
+        estados_excluidos_set: Set[str] = set(
+            estado for estado in (estados_excluidos or ("omitida_pagada", "caducada")) if estado
+        )
 
         stmt = select(AccionFactura).where(
             AccionFactura.aviso.isnot(None),
             AccionFactura.enviada_en.is_(None),
+            AccionFactura.accion_tipo.isnot(None),
+            AccionFactura.accion_tipo != "",
         )
         rows = self.db.execute(stmt).scalars().all()
-        return [x for x in rows if x.aviso and x.aviso.date() <= fecha]
 
-    def enviar_pendientes(self, *, fecha_iso: Optional[str] = None) -> int:
-        pendientes = self.listar_pendientes_envio(fecha_iso=fecha_iso)
+        filtradas: List[AccionFactura] = []
+        for accion in rows:
+            if accion.aviso is None:
+                continue
+            aviso_fecha = accion.aviso.date()
+            if aviso_fecha > fecha_limite:
+                continue
+            if fecha_desde and aviso_fecha < fecha_desde:
+                continue
+            if accion.envio_estado and accion.envio_estado in estados_excluidos_set:
+                continue
+            filtradas.append(accion)
+        return filtradas
+
+    def descartar_acciones_anteriores(
+        self,
+        *,
+        fecha_iso: Optional[str],
+        estado: str = "caducada",
+    ) -> int:
+        """
+        Marca como procesadas (sin enviar) las acciones con aviso anterior a la fecha indicada.
+        """
+        fecha_limite = self._parse_fecha(fecha_iso)
+        if not fecha_limite:
+            return 0
+
+        limite_dt = datetime.combine(fecha_limite, datetime.min.time())
+
+        stmt = select(AccionFactura).where(
+            AccionFactura.aviso.isnot(None),
+            AccionFactura.enviada_en.is_(None),
+            AccionFactura.aviso < limite_dt,
+        )
+        acciones = self.db.execute(stmt).scalars().all()
+        if not acciones:
+            return 0
+
+        ahora = datetime.utcnow()
+        for accion in acciones:
+            accion.envio_estado = estado
+            accion.enviada_en = ahora
+
+        self.db.commit()
+        return len(acciones)
+
+    def _factura_sigue_pendiente(
+        self,
+        accion: AccionFactura,
+        repo_facturas,
+        facturas_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Comprueba si la factura asociada a la acción continúa con saldo pendiente y devuelve su nombre si existe."""
+        if repo_facturas is None:
+            return True, None
+
+        try:
+            tercero = (accion.tercero or "").strip()
+            if not tercero:
+                return True, None
+
+            cache_key = tercero.lstrip("0") or tercero
+            facturas: Optional[List[Dict[str, Any]]] = None
+
+            if facturas_cache is not None:
+                if cache_key in facturas_cache:
+                    facturas = facturas_cache[cache_key]
+                else:
+                    facturas = repo_facturas.obtener_facturas(tercero=tercero)
+                    facturas_cache[cache_key] = facturas
+            else:
+                facturas = repo_facturas.obtener_facturas(tercero=tercero)
+
+            tipo_objetivo = (accion.tipo or "").strip()
+            asiento_objetivo = str(accion.asiento or "").strip()
+
+            if facturas:
+                for factura in facturas:
+                    tipo_factura = str(factura.get("tipo") or "").strip()
+                    asiento_factura = str(factura.get("asiento") or "").strip()
+                    if tipo_factura == tipo_objetivo and asiento_factura == asiento_objetivo:
+                        nombre = (
+                            factura.get("nombre_factura")
+                            or factura.get("nombre")
+                            or f"{tipo_factura}-{asiento_factura}"
+                        )
+                        return True, nombre
+
+            # Si no aparece en la lista de facturas vencidas, comprobar con consulta directa
+            factura_detalle = repo_facturas.obtener_factura_especifica(
+                tercero=tercero,
+                tipo=tipo_objetivo,
+                asiento=asiento_objetivo,
+            )
+            if factura_detalle:
+                pendiente = factura_detalle.get("pendiente", 0.0)
+                if pendiente is None:
+                    pendiente = 0.0
+                if float(pendiente) > 0:
+                    nombre = (
+                        factura_detalle.get("nombre_factura")
+                        or f"{factura_detalle.get('tipo', 'N/D')}-{factura_detalle.get('asiento', 'N/D')}"
+                    )
+                    return True, nombre
+
+            return False, None
+        except Exception:
+            # Si no podemos comprobarlo (p.ej. sin acceso a X3), preferimos enviar.
+            return True, None
+
+    def enviar_pendientes(
+        self,
+        *,
+        fecha_iso: Optional[str] = None,
+        fecha_desde_iso: Optional[str] = None,
+        repo_facturas=None,
+        simular: bool = False,
+        solo_filtrar: bool = False,
+        mostrar_omitidas: bool = False,
+    ) -> int:
+        pendientes = self.listar_pendientes_envio(
+            fecha_iso=fecha_iso,
+            fecha_desde_iso=fecha_desde_iso,
+            estados_excluidos=("omitida_pagada", "caducada"),
+        )
         if not pendientes:
             return 0
+        
+        # Filtrar facturas ya cobradas
+        pendientes_filtrados: List[AccionFactura] = []
+        facturas_cache: Dict[str, List[Dict[str, Any]]] = {}
+        omitidas: List[Dict[str, Any]] = []
+        for accion in pendientes:
+            sigue_pendiente, nombre_factura = self._factura_sigue_pendiente(
+                accion,
+                repo_facturas,
+                facturas_cache=facturas_cache,
+            )
+            if sigue_pendiente:
+                if nombre_factura:
+                    setattr(accion, "_nombre_factura_resuelta", nombre_factura)
+                pendientes_filtrados.append(accion)
+            else:
+                accion.envio_estado = "omitida_pagada"
+                if mostrar_omitidas:
+                    omitidas.append(
+                        {
+                            "id": accion.id,
+                            "idcliente": accion.idcliente,
+                            "tercero": accion.tercero,
+                            "factura": f"{accion.tipo or 'N/D'}-{accion.asiento or 'N/D'}",
+                            "aviso": accion.aviso.isoformat() if accion.aviso else None,
+                        }
+                    )
+        pendientes = pendientes_filtrados
+
+        if not pendientes:
+            if not simular:
+                self.db.commit()
+            if mostrar_omitidas and omitidas:
+                for info in omitidas:
+                    logger.info(
+                        "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
+                        info["id"],
+                        info["idcliente"],
+                        info["tercero"],
+                        info["factura"],
+                        info["aviso"],
+                    )
+            return 0
+
+        if solo_filtrar:
+            if mostrar_omitidas and omitidas:
+                for info in omitidas:
+                    logger.info(
+                        "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
+                        info["id"],
+                        info["idcliente"],
+                        info["tercero"],
+                        info["factura"],
+                        info["aviso"],
+                    )
+            resultado = []
+            for accion in pendientes:
+                resultado.append(
+                    {
+                        "id": accion.id,
+                        "idcliente": accion.idcliente,
+                        "tercero": accion.tercero,
+                        "tipo": accion.tipo,
+                        "asiento": accion.asiento,
+                        "aviso": accion.aviso.isoformat() if accion.aviso else None,
+                        "estado": accion.envio_estado,
+                        "factura_nombre": getattr(accion, "_nombre_factura_resuelta", None)
+                        or getattr(accion, "nombre_factura", None)
+                        or f"{accion.tipo or 'N/D'}-{accion.asiento or 'N/D'}",
+                    }
+                )
+            return resultado
+
+        if simular:
+            for accion in pendientes:
+                logger.info(
+                    "SIMULACION envío -> acción %s | tercero=%s | factura=%s",
+                    accion.id,
+                    accion.tercero or "N/D",
+                    getattr(accion, "_nombre_factura_resuelta", None)
+                    or getattr(accion, "nombre_factura", None)
+                    or f"{accion.tipo or 'N/D'}-{accion.asiento or 'N/D'}",
+                )
+            return len(pendientes)
         
         from app.services.notificador_consultores import NotificadorConsultores
         notificador = NotificadorConsultores(self.db)
@@ -232,6 +451,16 @@ class RepositorioRegistroFacturas:
                     item.envio_estado = "fallo"
         
         self.db.commit()
+        if mostrar_omitidas and omitidas:
+            for info in omitidas:
+                logger.info(
+                    "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
+                    info["id"],
+                    info["idcliente"],
+                    info["tercero"],
+                    info["factura"],
+                    info["aviso"],
+                )
         return enviados
 
     @staticmethod

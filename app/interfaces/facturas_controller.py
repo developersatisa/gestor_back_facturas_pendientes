@@ -77,6 +77,21 @@ def buscar_factura_por_numero(
 
         coincidencias = repo_facturas.buscar_por_numero(patron)
         if not coincidencias:
+            coincidencias_todas = repo_facturas.buscar_por_numero_incluyendo_pagadas(patron)
+            if coincidencias_todas:
+                factura_ref = coincidencias_todas[0]
+                nombre_factura = (
+                    factura_ref.get("nombre_factura")
+                    or f"{factura_ref.get('tipo', 'N/D')}-{factura_ref.get('asiento', 'N/D')}"
+                )
+                tercero = factura_ref.get("tercero") or "N/D"
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"La factura {nombre_factura} del tercero {tercero} no tiene saldo pendiente. "
+                        "Revisa la pestaña de facturas pagadas o el historial."
+                    ),
+                )
             return []
 
         cache_clientes: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -286,9 +301,9 @@ def descargar_excel_empresas_por_sociedad(
             for tercero, datos in datos_por_sociedad[sociedad].items():
                 # Solo incluir empresas con saldo neto > 0 (igual que el listado de empresas)
                 if datos['total'] > 0:
-                    # Ordenar facturas por monto descendente
-                    datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
-                    empresas_list.append(datos)
+                # Ordenar facturas por monto descendente
+                datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
+                empresas_list.append(datos)
             empresas_list.sort(key=lambda x: x['total'], reverse=True)
             datos_por_sociedad[sociedad] = empresas_list
         

@@ -72,16 +72,6 @@ class ObtenerFacturasAgrupadasPorCliente:
         query += """
         GROUP BY 
           BPR_0
-        HAVING 
-          -- Restore previous condition: net amount > 0 (pending invoices minus credit notes)
-          SUM(
-            CASE 
-              WHEN (SNS_0 = -1 OR FLGCLE_0 = -1 OR AMTCUR_0 < 0) THEN -ABS(AMTCUR_0)
-              WHEN (FLGCLE_0 = 1) AND (SNS_0 <> -1) AND (AMTCUR_0 - ISNULL(PAYCUR_0,0)) > 0 
-                THEN (AMTCUR_0 - ISNULL(PAYCUR_0,0)) 
-              ELSE 0 
-            END
-          ) > 0
         ORDER BY 
           monto_pendiente DESC
         """
@@ -115,9 +105,9 @@ class ObtenerFacturasAgrupadasPorCliente:
             sociedades_map = {}
             for row in filas_soc:
                 try:
-                    key = str(row.tercero)
+                    key = str(row.tercero).strip()
                 except Exception:
-                    key = str(row[0])
+                    key = str(row[0]).strip()
                 try:
                     soc = str(row.sociedad).strip()
                 except Exception:
@@ -146,15 +136,33 @@ class ObtenerFacturasAgrupadasPorCliente:
                 asignaciones_map = {}
             
             for row in res_main:
-                tercero_original = row.tercero
+                tercero_original = str(row.tercero).strip() if row.tercero is not None else ''
                 # Normalizar ID: intentar quitar ceros; si no es numérico, usar original
                 try:
-                    tercero_sin_ceros = str(int(str(row.tercero)))
+                    tercero_sin_ceros = str(int(tercero_original))
                 except Exception:
-                    tercero_sin_ceros = str(row.tercero)
+                    tercero_sin_ceros = tercero_original
                 
                 # Buscar datos del cliente
-                datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
+                datos_cliente = {}
+                if tercero_sin_ceros:
+                    datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros) or {}
+                    if datos_cliente:
+                        logger.debug(f"Cliente encontrado con código normalizado '{tercero_sin_ceros}': {datos_cliente.get('razsoc', 'Sin nombre')}")
+                if not datos_cliente and tercero_original and tercero_original != tercero_sin_ceros:
+                    datos_cliente = self.repo_clientes.obtener_cliente(tercero_original) or {}
+                    if datos_cliente:
+                        logger.debug(f"Cliente encontrado con código original '{tercero_original}': {datos_cliente.get('razsoc', 'Sin nombre')}")
+
+                if not datos_cliente:
+                    logger.warning(f"No se encontraron datos del cliente para tercero '{tercero_original}' (normalizado: '{tercero_sin_ceros}')")
+                    datos_cliente = {
+                        "idcliente": tercero_sin_ceros or tercero_original,
+                        "razsoc": None,
+                        "cif": None,
+                        "cif_empresa": None,
+                        "cif_factura": None,
+                    }
                 # Consultor asignado (si existe asignación)
                 consultor_nombre = None
                 try:
@@ -166,6 +174,13 @@ class ObtenerFacturasAgrupadasPorCliente:
                 
                 # Monto pendiente ya viene calculado desde SQL
                 monto_pendiente = float(row.monto_pendiente) if row.monto_pendiente else 0.0
+                logger.debug(
+                    "Resumen cliente %s (normalizado %s): saldo bruto=%.4f, facturas=%s",
+                    tercero_original,
+                    tercero_sin_ceros,
+                    monto_pendiente,
+                    getattr(row, "total_facturas", None),
+                )
                 
                 # Determinar estado basado en nivel de reclamación
                 nivel_max = row.nivel_reclamacion_max or 0
@@ -176,18 +191,23 @@ class ObtenerFacturasAgrupadasPorCliente:
                 else:
                     estado = "verde"
                 
+                # Filtrar clientes sin saldo pendiente neto significativo
+                if round(monto_pendiente, 2) <= 0:
+                    continue
+                
                 # Acceso seguro a alias agregados (según driver pueden variar may/min)
                 cliente_info = {
-                    "idcliente": tercero_original,
-                    "nombre_cliente": datos_cliente.get('razsoc', 'Sin nombre') if datos_cliente else 'Sin nombre',
-                    "cif_cliente": datos_cliente.get('cif', 'Sin CIF') if datos_cliente else 'Sin CIF',
-                    "cif_empresa": datos_cliente.get('cif_empresa', 'Sin CIF empresa') if datos_cliente else 'Sin CIF empresa',
-                    "cif_factura": datos_cliente.get('cif_factura', 'Sin CIF facturación') if datos_cliente else 'Sin CIF facturación',
+                    "idcliente": tercero_original or tercero_sin_ceros,
+                    "idcliente_normalizado": tercero_sin_ceros,
+                    "nombre_cliente": (datos_cliente.get('razsoc') if datos_cliente else None) or 'Sin nombre',
+                    "cif_cliente": (datos_cliente.get('cif') if datos_cliente else None) or 'Sin CIF',
+                    "cif_empresa": (datos_cliente.get('cif_empresa') if datos_cliente else None) or 'Sin CIF empresa',
+                    "cif_factura": (datos_cliente.get('cif_factura') if datos_cliente else None) or 'Sin CIF facturación',
                     "numero_facturas": row.total_facturas,
                     "monto_debe": monto_pendiente,
                     "estado": estado,
                     "consultor_asignado": consultor_nombre,
-                    "sociedades": sorted(list(sociedades_map.get(str(tercero_original), set()))),
+                    "sociedades": sorted(list(sociedades_map.get(tercero_original, set()) | sociedades_map.get(tercero_sin_ceros, set()))),
                 }
                 
                 clientes_con_facturas.append(cliente_info)

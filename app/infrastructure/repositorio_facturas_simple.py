@@ -58,8 +58,20 @@ class RepositorioFacturas:
             query += " AND CPY_0 = :sociedad"
             params["sociedad"] = sociedad
         if tercero:
-            query += " AND BPR_0 = :tercero"
-            params["tercero"] = tercero
+            tercero_str = str(tercero).strip()
+            tercero_sin_ceros = tercero_str.lstrip('0') or tercero_str
+            params["tercero"] = tercero_str
+            params["tercero_sin_ceros"] = tercero_sin_ceros
+            len_tercero = len(tercero_sin_ceros) or 1
+            params["len_tercero"] = len_tercero
+            query += """
+            AND (
+                BPR_0 = :tercero
+                OR LTRIM(RTRIM(BPR_0)) = :tercero
+                OR LTRIM(RTRIM(BPR_0)) = :tercero_sin_ceros
+                OR RIGHT(LTRIM(RTRIM(BPR_0)), :len_tercero) = :tercero_sin_ceros
+            )
+            """
         if fecha_desde:
             query += " AND DUDDAT_0 >= :fecha_desde"
             params["fecha_desde"] = fecha_desde
@@ -96,7 +108,7 @@ class RepositorioFacturas:
                 'planta': row.planta,
                 'moneda': row.moneda,
                 'colectivo': row.colectivo,
-                'tercero': row.tercero,
+                'tercero': str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
                 'vencimiento': row.vencimiento,
                 'forma_pago': row.forma_pago,
                 'sentido': row.sentido,
@@ -160,7 +172,7 @@ class RepositorioFacturas:
                     "planta": row.planta,
                     "moneda": row.moneda,
                     "colectivo": row.colectivo,
-                    "tercero": row.tercero,
+                    "tercero": str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
                     "vencimiento": row.vencimiento,
                     "forma_pago": row.forma_pago,
                     "sentido": row.sentido,
@@ -174,28 +186,239 @@ class RepositorioFacturas:
             )
         return coincidencias
 
+
+    def buscar_por_numero_incluyendo_pagadas(self, numero: str) -> List[Dict[str, Any]]:
+        """Busca facturas por número o asiento sin filtrar por saldo pendiente."""
+        patron = (numero or "").strip()
+        if not patron:
+            return []
+
+        try:
+            bind = self.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return []
+        except Exception:
+            return []
+
+        query = """
+        SELECT TOP 25 TYP_0 as tipo, ACCNUM_0 as asiento, NUM_0 as nombre_factura, CPY_0 as sociedad,
+               FCY_0 as planta, CUR_0 as moneda, SAC_0 as colectivo, BPR_0 as tercero,
+               DUDDAT_0 as vencimiento, PAM_0 as forma_pago, SNS_0 as sentido,
+               AMTCUR_0 as importe, PAYCUR_0 as pago, LEVFUP_0 as nivel_reclamacion,
+               DATFUP_0 as fecha_reclamacion, FLGCLE_0 as check_pago
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE 1=1
+          AND TYP_0 NOT IN ('AA', 'ZZ')
+          AND SAC_0 IN ('4300','4302')
+          AND CPY_0 IN ('S005','S001','S010')
+          AND DUDDAT_0 < GETDATE()
+          AND (ACCNUM_0 LIKE :patron OR NUM_0 LIKE :patron)
+        ORDER BY DUDDAT_0 DESC
+        """
+        params = {"patron": f"%{patron}%"}
+
+        result = self.db.execute(text(query), params)
+
+        coincidencias: List[Dict[str, Any]] = []
+        for row in result:
+            importe = float(row.importe) if row.importe is not None else 0.0
+            pago = float(row.pago) if row.pago is not None else 0.0
+            pendiente = round(importe - pago, 2)
+
+            coincidencias.append(
+                {
+                    "tipo": row.tipo,
+                    "asiento": row.asiento,
+                    "nombre_factura": getattr(row, "nombre_factura", None),
+                    "sociedad": row.sociedad,
+                    "sociedad_nombre": SOCIEDADES_LABELS.get(str(row.sociedad).strip(), None),
+                    "planta": row.planta,
+                    "moneda": row.moneda,
+                    "colectivo": row.colectivo,
+                    "tercero": str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
+                    "vencimiento": row.vencimiento,
+                    "forma_pago": row.forma_pago,
+                    "sentido": row.sentido,
+                    "importe": importe,
+                    "pago": pago,
+                    "pendiente": pendiente,
+                    "nivel_reclamacion": row.nivel_reclamacion,
+                    "fecha_reclamacion": row.fecha_reclamacion,
+                    "check_pago": row.check_pago,
+                }
+            )
+        return coincidencias
+
+    def obtener_factura_especifica(
+        self,
+        *,
+        tercero: str,
+        tipo: str,
+        asiento: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Obtiene una factura concreta sin filtrar por estado o vencimiento."""
+        try:
+            bind = self.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return None
+        except Exception:
+            return None
+
+        tercero_str = str(tercero).strip()
+        tercero_sin_ceros = tercero_str.lstrip('0') or tercero_str
+
+        query = """
+        SELECT TOP 1
+            TYP_0 as tipo,
+            ACCNUM_0 as asiento,
+            NUM_0 as nombre_factura,
+            CPY_0 as sociedad,
+            SAC_0 as colectivo,
+            BPR_0 as tercero,
+            DUDDAT_0 as vencimiento,
+            AMTCUR_0 as importe,
+            PAYCUR_0 as pago,
+            FLGCLE_0 as check_pago
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE TYP_0 = :tipo
+          AND ACCNUM_0 = :asiento
+          AND SAC_0 IN ('4300','4302')
+          AND CPY_0 IN ('S005','S001','S010')
+          AND (
+                BPR_0 = :tercero
+                OR LTRIM(RTRIM(BPR_0)) = :tercero
+                OR LTRIM(RTRIM(BPR_0)) = :tercero_sin_ceros
+                OR RIGHT(LTRIM(RTRIM(BPR_0)), :len_tercero) = :tercero_sin_ceros
+              )
+        """
+
+        params = {
+            "tipo": tipo,
+            "asiento": asiento,
+            "tercero": tercero_str,
+            "tercero_sin_ceros": tercero_sin_ceros,
+            "len_tercero": len(tercero_sin_ceros) or 1,
+        }
+
+        result = self.db.execute(text(query), params)
+        row = result.fetchone()
+        if not row:
+            return None
+
+        importe = float(row.importe) if row.importe is not None else 0.0
+        pago = float(row.pago) if row.pago is not None else 0.0
+        pendiente = round(importe - pago, 2)
+
+        return {
+            "tipo": row.tipo,
+            "asiento": row.asiento,
+            "nombre_factura": getattr(row, "nombre_factura", None),
+            "sociedad": row.sociedad,
+            "colectivo": row.colectivo,
+            "tercero": str(row.tercero).strip() if getattr(row, "tercero", None) is not None else None,
+            "vencimiento": row.vencimiento,
+            "importe": importe,
+            "pago": pago,
+            "pendiente": pendiente,
+            "check_pago": row.check_pago,
+        }
+
 class RepositorioClientes:
     def __init__(self, db_session: Session):
         self.db = db_session
 
     def obtener_cliente(self, codigo_tercero: str) -> Optional[Dict[str, Any]]:
         """Obtiene datos de un cliente específico"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        codigo_original = str(codigo_tercero).strip()
+        codigo_trim = codigo_original.lstrip('0') or codigo_original
+        len_trim = len(codigo_trim) or 1
+        codigo_int = None
+        try:
+            codigo_int = int(codigo_trim)
+        except Exception:
+            codigo_int = None
+
+        # Primera consulta: coincidencia exacta y variaciones
         query = """
-        SELECT idcliente, razsoc, cif, cif_empresa, cif_factura
+        SELECT TOP 1
+            LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) AS idcliente,
+            NULLIF(LTRIM(RTRIM(razsoc)), '') AS razsoc,
+            NULLIF(LTRIM(RTRIM(cif)), '') AS cif,
+            NULLIF(LTRIM(RTRIM(cif_empresa)), '') AS cif_empresa,
+            NULLIF(LTRIM(RTRIM(cif_factura)), '') AS cif_factura
         FROM dbo.clientes 
-        WHERE idcliente = :codigo_tercero
+        WHERE
+            LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_tercero
+            OR CAST(idcliente AS NVARCHAR(50)) = :codigo_tercero
+            OR LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim
+            OR RIGHT(LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))), :len_trim) = :codigo_trim
+            OR RIGHT(CAST(idcliente AS NVARCHAR(50)), :len_trim) = :codigo_trim
+            OR (
+                :codigo_int IS NOT NULL
+                AND TRY_CONVERT(INT, LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) = :codigo_int
+            )
         """
         
-        result = self.db.execute(text(query), {"codigo_tercero": codigo_tercero})
-        row = result.fetchone()
+        parametros = {
+            "codigo_tercero": codigo_original,
+            "codigo_trim": codigo_trim,
+            "len_trim": len_trim,
+            "codigo_int": codigo_int,
+        }
+        
+        try:
+            result = self.db.execute(text(query), parametros)
+            row = result.fetchone()
+            
+            # Intento alterno: intercambiar códigos si siguen sin coincidir
+            if not row and codigo_trim and codigo_trim != codigo_original:
+                parametros_alt = {
+                    "codigo_tercero": codigo_trim,
+                    "codigo_trim": codigo_original,
+                    "len_trim": len(codigo_original) or 1,
+                    "codigo_int": codigo_int,
+                }
+                result_alt = self.db.execute(text(query), parametros_alt)
+                row = result_alt.fetchone()
+            
+            # Si aún no hay resultado, intentar búsqueda por número entero directamente
+            if not row and codigo_int is not None:
+                query_directa = """
+                SELECT TOP 1
+                    LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) AS idcliente,
+                    NULLIF(LTRIM(RTRIM(razsoc)), '') AS razsoc,
+                    NULLIF(LTRIM(RTRIM(cif)), '') AS cif,
+                    NULLIF(LTRIM(RTRIM(cif_empresa)), '') AS cif_empresa,
+                    NULLIF(LTRIM(RTRIM(cif_factura)), '') AS cif_factura
+                FROM dbo.clientes 
+                WHERE idcliente = :codigo_int
+                """
+                result_directa = self.db.execute(text(query_directa), {"codigo_int": codigo_int})
+                row = result_directa.fetchone()
         
         if row:
-            return {
-                'idcliente': row.idcliente,
-                'razsoc': row.razsoc,
-                'cif': row.cif,
-                'cif_empresa': row.cif_empresa,
-                'cif_factura': getattr(row, "cif_factura", None)
+                def _clean(value):
+                    if value is None:
+                        return None
+                    texto = str(value).strip()
+                    return texto or None
+                
+                cliente_data = {
+                    'idcliente': _clean(getattr(row, "idcliente", None)),
+                    'razsoc': _clean(getattr(row, "razsoc", None)),
+                    'cif': _clean(getattr(row, "cif", None)),
+                    'cif_empresa': _clean(getattr(row, "cif_empresa", None)),
+                    'cif_factura': _clean(getattr(row, "cif_factura", None)),
             }
+                logger.debug(f"Cliente encontrado para código '{codigo_tercero}': {cliente_data.get('razsoc', 'Sin nombre')}")
+                return cliente_data
+            else:
+                logger.debug(f"No se encontró cliente para código '{codigo_tercero}' (original: '{codigo_original}', trim: '{codigo_trim}', int: {codigo_int})")
+        except Exception as e:
+            logger.warning(f"Error al buscar cliente '{codigo_tercero}': {e}")
+        
         return None
  
