@@ -5,7 +5,7 @@ import msal
 import os
 import time
 import jwt
-from urllib.parse import urlencode
+from urllib.parse import urlencode, unquote
 
 from app.config.settings import (
     get_azure_client_id,
@@ -116,12 +116,21 @@ def auth_callback(request: Request, code: Optional[str] = None, state: Optional[
     token = jwt.encode(payload, get_jwt_secret(), algorithm="HS256")
 
     # Redirect back to frontend with token as a query param.
-    # Compute frontend return URL; avoid duplicating /auth/return if already present in state
-    frontend_base = (state or get_frontend_base_url()).rstrip("/")
+    # ALWAYS prioritize state parameter (comes from frontend) - this is critical for development
+    # Decode state if it's URL-encoded (Azure AD may send it encoded)
+    decoded_state = unquote(state) if state else None
+    
+    # Use decoded_state if available, otherwise fallback to configured frontend base URL
+    # This ensures:
+    # - Development: uses state (http://localhost:5173/auth/return) even if FRONTEND_BASE_URL points to production
+    # - Production: uses state if present, otherwise uses configured production URL
+    frontend_base = (decoded_state or get_frontend_base_url()).rstrip("/")
+    
     if frontend_base.lower().endswith("/auth/return"):
         final_return = frontend_base
     else:
         final_return = f"{frontend_base}/auth/return"
+    
     url = f"{final_return}?{urlencode({'token': token})}"
     return RedirectResponse(url=url)
 
