@@ -21,6 +21,27 @@ El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separaci�
 └── 🚀 main.py                  # Punto de entrada de la aplicación
 ```
 
+## 🚀 Inicio rápido (Backend)
+
+1. Clona y entra en el repositorio:
+   ```bash
+   git clone <repository-url>
+   cd facturas_impagadas/facturas_backend
+   ```
+2. Crea el entorno virtual e instala dependencias:
+   ```bash
+   python3.11 -m venv venv
+   source venv/bin/activate      # En Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+3. Carga variables (`.env`) si corresponde y arranca en desarrollo:
+   ```bash
+   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   ```
+4. Consulta la API en `http://localhost:8000` y la documentación en `http://localhost:8000/docs`.
+
+> Para el frontend revisa `facturas_frontend/README.md`.
+
 ## 🚀 Tecnologías Utilizadas
 
 ### Backend
@@ -332,6 +353,66 @@ sudo systemctl status gestor-facturas-backend
 - Métricas de rendimiento
 - Alertas de errores
 
+### Despliegue operativo
+Cuando quieras llevar los cambios a producción:
+
+1. Actualiza el código y dependencias:
+   ```bash
+   cd /home/produccion/facturas_impagadas/facturas_backend
+   git pull origin master
+   source venv/bin/activate
+   pip install -r requirements.txt
+   deactivate
+   ```
+2. Reinicia el servicio systemd y verifica:
+   ```bash
+   sudo systemctl restart facturas-backend.service
+   sudo systemctl status facturas-backend.service
+   curl http://127.0.0.1:8520/health
+   ```
+
+### Gestión diaria con systemd
+- Ver estado: `sudo systemctl status facturas-backend.service`
+- Reiniciar: `sudo systemctl restart facturas-backend.service`
+- Detener / arrancar: `sudo systemctl stop|start facturas-backend.service`
+- Logs en vivo: `sudo journalctl -u facturas-backend.service -f`
+- Logs recientes: `sudo journalctl -u facturas-backend.service --since "1 hour ago"`
+
+### Diagnóstico rápido
+- ¿Puerto ocupado? `sudo lsof -i :8520`
+- ¿Servicio falló? Revisa `sudo journalctl -xeu facturas-backend.service`
+- ¿Dependencias? `source venv/bin/activate && pip install -r requirements.txt`
+
+### Seguridad básica
+- Abrir puerto únicamente si usas acceso directo:
+  ```bash
+  sudo ufw allow 8520
+  sudo ufw reload
+  ```
+- Recomendada cuenta dedicada:
+  ```bash
+  sudo useradd -r -s /bin/false facturas
+  sudo chown -R facturas:facturas /home/produccion/facturas_impagadas
+  ```
+
+---
+
+## 📚 Documentación relacionada
+- Frontend React/Vite: `facturas_frontend/README.md`
+
+## 🧱 Estructura general del repositorio
+```
+facturas_impagadas/
+├── facturas_frontend/      # Aplicación React + Vite (UI)
+│   └── README.md
+├── facturas_backend/       # Este backend FastAPI
+│   └── README.md
+├── systemd/                # Servicios para producción
+│   ├── facturas-backend.service
+│   └── facturas-frontend.service
+└── README_PRODUCCION.md    # Pasos de despliegue end-to-end
+```
+
 ## 🤝 Contribución al Proyecto
 
 ### Flujo de Trabajo
@@ -376,7 +457,7 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 ---
 **Desarrollado por el equipo de ATISA**
 
-*Última actualización: Agosto 2025* 
+*Última actualización: Noviembre 2025* 
 ## Cambios Recientes (Gestión / Sociedades / Registro)
 
 - Gestión en BD real (ATISA_Input): consultores (`dbo.consultores`), asignaciones (`dbo.cliente_consultor`), registro de acciones (`dbo.factura_acciones`) y cambios (`dbo.factura_cambios`). Sin claves foráneas, creación automática al arranque si hay permisos.
@@ -408,4 +489,23 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
   ```
   - Asegúrate de `chmod +x` al script y de crear el log (`sudo touch /var/log/facturas_acciones.log`).
   - Define las variables SMTP (`NOTIFIER_SMTP_*`) en un entorno visible para cron (`/etc/environment` o similar).
+
+### Mejoras en búsqueda y normalización de datos (Noviembre 2025)
+
+- **Normalización de IDs de clientes**: El sistema ahora maneja correctamente IDs con y sin ceros a la izquierda, espacios extra y variaciones de formato para garantizar consistencia en las búsquedas.
+- **Mejoras en `obtener_cliente`**: 
+  - Búsqueda robusta con múltiples fallbacks (string normalizado, string original, integer)
+  - Manejo de valores NULL y strings vacíos usando `NULLIF` en SQL
+  - Logging detallado para debugging de problemas de búsqueda
+- **Búsqueda de facturas mejorada**: 
+  - `buscar_por_numero` ahora incluye todas las facturas (pagadas y pendientes)
+  - Nueva función `obtener_factura_especifica` para buscar facturas sin filtros de fecha o estado
+- **Script de envío de emails**:
+  - Verificación de facturas pendientes antes de enviar emails
+  - Soporte para facturas no vencidas pero con saldo pendiente
+  - Caché en memoria para evitar consultas redundantes a la BD
+  - Flags `--solo-filtrar` y `--mostrar-omitidas` para debugging
+- **Correcciones de código**:
+  - Corrección de errores de indentación en múltiples archivos
+  - Mejora en el manejo de errores y logging
 
