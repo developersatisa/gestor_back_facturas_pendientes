@@ -301,9 +301,9 @@ def descargar_excel_empresas_por_sociedad(
             for tercero, datos in datos_por_sociedad[sociedad].items():
                 # Solo incluir empresas con saldo neto > 0 (igual que el listado de empresas)
                 if datos['total'] > 0:
-                # Ordenar facturas por monto descendente
-                datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
-                empresas_list.append(datos)
+                    # Ordenar facturas por monto descendente
+                    datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
+                    empresas_list.append(datos)
             empresas_list.sort(key=lambda x: x['total'], reverse=True)
             datos_por_sociedad[sociedad] = empresas_list
         
