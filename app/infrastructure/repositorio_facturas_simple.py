@@ -398,8 +398,8 @@ class RepositorioClientes:
                 """
                 result_directa = self.db.execute(text(query_directa), {"codigo_int": codigo_int})
                 row = result_directa.fetchone()
-        
-        if row:
+            
+            if row:
                 def _clean(value):
                     if value is None:
                         return None
@@ -412,7 +412,7 @@ class RepositorioClientes:
                     'cif': _clean(getattr(row, "cif", None)),
                     'cif_empresa': _clean(getattr(row, "cif_empresa", None)),
                     'cif_factura': _clean(getattr(row, "cif_factura", None)),
-            }
+                }
                 logger.debug(f"Cliente encontrado para código '{codigo_tercero}': {cliente_data.get('razsoc', 'Sin nombre')}")
                 return cliente_data
             else:
