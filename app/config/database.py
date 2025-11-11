@@ -351,7 +351,7 @@ def ensure_gestion_columns():
     """
     # La lógica se movió a database_migrations.migrate_consultores_columns()
     # y database_migrations.migrate_factura_acciones_columns()
-        pass
+    pass
 
 
 def ensure_gestion_tables():

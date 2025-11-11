@@ -32,25 +32,63 @@ class NotificadorConsultores:
         self.db = db_session
         pass
 
-    def notificar_accion(self, accion: AccionFactura) -> None:
-        consultor = self._resolver_consultor(accion)
+    def notificar_accion(self, accion: AccionFactura) -> bool:
+        """
+        Intenta enviar la notificación de una acción.
+        Retorna True si se envió correctamente, False en caso contrario.
+        
+        Prioridad para obtener el destinatario:
+        1. Campo `destinatario` de la acción (si existe)
+        2. Email del consultor desde `consultor_id` (si existe)
+        3. Consultor asignado al cliente (fallback)
+        """
+        destinatario_email: Optional[str] = None
+        consultor: Optional[DatosConsultor] = None
+        
+        # Prioridad 1: Usar el destinatario ya establecido en la acción
+        if accion.destinatario and accion.destinatario.strip():
+            destinatario_email = accion.destinatario.strip()
+            # Si hay consultor_id, obtener el consultor para construir el mensaje
+            if accion.consultor_id:
+                consultor_entidad = self.db.get(Consultor, accion.consultor_id)
+                if consultor_entidad:
+                    consultor = DatosConsultor(entidad=consultor_entidad, asignacion=None)
+        
+        # Prioridad 2: Si no hay destinatario pero hay consultor_id, obtener su email
+        if not destinatario_email and accion.consultor_id:
+            consultor_entidad = self.db.get(Consultor, accion.consultor_id)
+            if consultor_entidad and consultor_entidad.email:
+                destinatario_email = consultor_entidad.email.strip()
+                consultor = DatosConsultor(entidad=consultor_entidad, asignacion=None)
+        
+        # Prioridad 3: Resolver consultor desde la asignación del cliente
+        if not consultor or not consultor.entidad:
+            consultor = self._resolver_consultor(accion)
+            if consultor and consultor.entidad and consultor.entidad.email:
+                if not destinatario_email:
+                    destinatario_email = consultor.entidad.email.strip()
+                if accion.consultor_id is None:
+                    accion.consultor_id = consultor.entidad.id
+        
         if not consultor or not consultor.entidad:
             logger.info("Accion %s registrada sin consultor asignado; no se envia notificacion", accion.id)
-            return
+            return False
+        
+        if not destinatario_email:
+            logger.warning("El consultor %s no tiene email configurado; no se puede enviar la notificacion de la accion %s", consultor.entidad.nombre, accion.id)
+            return False
 
         # Enviar solo por email; 'accion_tipo' se incluye como instrucción en el mensaje
         subject, cuerpo = self._construir_mensaje(accion, consultor)
         accion.consultor_id = consultor.entidad.id
-        destinatario_email: Optional[str] = (consultor.entidad.email or "").strip() or None
-
-        if destinatario_email:
-            enviado = self._intentar_email([destinatario_email], subject, cuerpo)
-            if enviado:
-                accion.destinatario = destinatario_email
-            else:
-                logger.warning("No se pudo enviar la notificacion por email para la accion %s", accion.id)
+        
+        enviado = self._intentar_email([destinatario_email], subject, cuerpo)
+        if enviado:
+            accion.destinatario = destinatario_email
+            return True
         else:
-            logger.warning("El consultor %s no tiene email configurado; no se puede enviar la notificacion de la accion %s", consultor.entidad.nombre, accion.id)
+            logger.warning("No se pudo enviar la notificacion por email para la accion %s", accion.id)
+            return False
 
     def _intentar_email(self, destinatarios: Sequence[Optional[str]], subject: str, cuerpo: str) -> bool:
         correos = [d.strip() for d in destinatarios if d and d.strip()]

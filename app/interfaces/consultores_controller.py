@@ -12,15 +12,17 @@ router = APIRouter(prefix="/api", tags=["Consultores"])
 class ConsultorIn(BaseModel):
     nombre: str = Field(..., min_length=2, max_length=150)
     estado: Literal['activo', 'inactivo', 'vacaciones'] = 'activo'
-    email: Optional[EmailStr] = None
+    email: EmailStr = Field(..., description="Correo electrónico del consultor (obligatorio)")
 
     @validator('email', pre=True)
     def _blank_to_none(cls, value):
         if value is None:
-            return None
+            raise ValueError('El correo electrónico es obligatorio')
         if isinstance(value, str):
             trimmed = value.strip()
-            return trimmed or None
+            if not trimmed:
+                raise ValueError('El correo electrónico no puede estar vacío')
+            return trimmed
         return value
 
 

@@ -1,6 +1,6 @@
 from typing import List, Optional
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text as sqltext
@@ -135,6 +135,7 @@ def listar_seguimientos(
             # Obtener la primera acción de cada seguimiento para mostrar la acción común
             # Usamos una consulta simple y luego agrupamos por seguimiento_id tomando la primera
             accion_comun_query = select(
+                AccionFactura.id,
                 AccionFactura.seguimiento_id,
                 AccionFactura.accion_tipo,
                 AccionFactura.descripcion,
@@ -149,14 +150,43 @@ def listar_seguimientos(
                 accion_comun_query = accion_comun_query.where(AccionFactura.tercero == tercero)
             
             accion_rows = db.execute(accion_comun_query).all()
+            # Agrupar acciones por seguimiento_id y por (accion_tipo, descripcion, aviso)
             for a_row in accion_rows:
-                seg_id = a_row[0]
+                seg_id = a_row[1]
+                accion_id = a_row[0]
+                accion_tipo = a_row[2] or ""
+                descripcion = a_row[3] or ""
+                aviso = a_row[4].isoformat().split('T')[0] if a_row[4] else ""
+                
+                # Crear clave única para agrupar acciones comunes
+                key = f"{accion_tipo}|{descripcion}|{aviso}"
+                
                 if seg_id not in seguimiento_accion_comun:
-                    seguimiento_accion_comun[seg_id] = {
-                        "accion_tipo": a_row[1] or "",
-                        "descripcion": a_row[2] or "",
-                        "aviso": a_row[3].isoformat().split('T')[0] if a_row[3] else ""
+                    seguimiento_accion_comun[seg_id] = {}
+                
+                if key not in seguimiento_accion_comun[seg_id]:
+                    seguimiento_accion_comun[seg_id][key] = {
+                        "accion_tipo": accion_tipo,
+                        "descripcion": descripcion,
+                        "aviso": aviso,
+                        "ids": []
                     }
+                
+                # Añadir el ID a la lista de IDs de este grupo
+                if accion_id not in seguimiento_accion_comun[seg_id][key]["ids"]:
+                    seguimiento_accion_comun[seg_id][key]["ids"].append(accion_id)
+            
+            # Convertir el diccionario anidado a una lista para mantener compatibilidad
+            # Tomar solo la primera acción común de cada seguimiento (comportamiento anterior)
+            seguimiento_accion_comun_flat = {}
+            for seg_id, grupos in seguimiento_accion_comun.items():
+                # Tomar el primer grupo (el más antiguo por orden de creación)
+                primera_key = next(iter(grupos.keys())) if grupos else None
+                if primera_key:
+                    seguimiento_accion_comun_flat[seg_id] = grupos[primera_key]
+                else:
+                    seguimiento_accion_comun_flat[seg_id] = None
+            seguimiento_accion_comun = seguimiento_accion_comun_flat
             
             # Obtener todas las acciones creadas de cada seguimiento
             acciones_creadas_query = select(
@@ -219,6 +249,9 @@ def listar_seguimientos(
 def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, db: Session = Depends(get_gestion_db)):
     try:
         from datetime import datetime
+        from app.domain.models.gestion import ClienteConsultor, Consultor
+        from sqlalchemy import select
+        
         ahora = datetime.utcnow()
         def parse_date(s: Optional[str]):
             if not s or not s.strip():
@@ -229,6 +262,42 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                 except Exception:
                     continue
             return None
+
+        def resolver_destinatario(consultor_id: Optional[int], idcliente: Optional[int], tercero: str) -> Optional[str]:
+            """Resuelve el email del consultor para establecer como destinatario."""
+            destinatario_email = None
+            
+            if consultor_id:
+                # Si ya tenemos consultor_id, obtener su email directamente
+                consultor = db.get(Consultor, consultor_id)
+                if consultor and consultor.email:
+                    destinatario_email = consultor.email.strip() or None
+            else:
+                # Buscar consultor asignado al cliente
+                candidatos = []
+                if idcliente is not None:
+                    candidatos.append(idcliente)
+                if tercero:
+                    try:
+                        candidatos.append(int(str(tercero)))
+                    except (TypeError, ValueError):
+                        pass
+
+                for idcliente_candidato in candidatos:
+                    stmt = (
+                        select(ClienteConsultor)
+                        .where(ClienteConsultor.idcliente == idcliente_candidato)
+                        .order_by(ClienteConsultor.creado_en.desc(), ClienteConsultor.id.desc())
+                        .limit(1)
+                    )
+                    asignacion = db.execute(stmt).scalars().first()
+                    if asignacion:
+                        consultor = db.get(Consultor, asignacion.consultor_id)
+                        if consultor and consultor.email:
+                            destinatario_email = consultor.email.strip() or None
+                        break
+            
+            return destinatario_email
 
         aviso_dt = parse_date(payload.aviso)
         # La fecha es opcional, solo validar si se proporciona
@@ -247,7 +316,6 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
         
         # Si se está editando una acción común específica, solo actualizar esa
         if payload.editar_accion_comun_id is not None:
-            logger.info(f"Editando acción común específica {payload.editar_accion_comun_id} para seguimiento {seguimiento_id}")
             # Buscar todas las acciones con los mismos valores (accion_tipo, descripcion, aviso) que la acción a editar
             accion_a_editar = next((a for a in acciones_con_comun if a.id == payload.editar_accion_comun_id), None)
             if not accion_a_editar:
@@ -265,6 +333,9 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
             facturas_payload_set = {((f.get("tipo") or "").strip(), str(f.get("asiento") or "").strip()) for f in payload.facturas}
             acciones_a_eliminar = []
             
+            # Resolver el destinatario una vez para todas las acciones del grupo
+            destinatario_grupo = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
+            
             for acc in acciones_del_mismo_grupo:
                 factura_key = (acc.tipo or "", str(acc.asiento or ""))
                 if factura_key in facturas_payload_set:
@@ -274,6 +345,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     acc.aviso = aviso_dt
                     acc.usuario = payload.usuario
                     acc.consultor_id = payload.consultor_id
+                    acc.destinatario = destinatario_grupo
                     acc.usuario_modificacion = payload.usuario
                     acc.fecha_modificacion = ahora
                     acciones_a_actualizar.append(acc)
@@ -294,6 +366,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     continue
                 factura_key = (tipo, asiento)
                 if factura_key not in facturas_existentes_set:
+                    destinatario = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
                     acc = AccionFactura(
                         idcliente=payload.idcliente,
                         tercero=payload.tercero,
@@ -305,6 +378,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                         usuario=payload.usuario,
                         consultor_id=payload.consultor_id,
                         seguimiento_id=seguimiento_id,
+                        destinatario=destinatario,
                     )
                     db.add(acc)
                     acciones_creadas.append(acc)
@@ -312,6 +386,8 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
         # Si hay acciones placeholder, actualizarlas TODAS con la acción común
         elif acciones_placeholder:
             logger.info(f"Actualizando {len(acciones_placeholder)} acciones placeholder con acción común")
+            # Resolver el destinatario una vez para todas las acciones placeholder
+            destinatario_placeholder = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
             # Actualizar TODAS las acciones placeholder del seguimiento con la acción común
             for acc in acciones_placeholder:
                 acc.accion_tipo = payload.accion_tipo
@@ -319,6 +395,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                 acc.aviso = aviso_dt
                 acc.usuario = payload.usuario
                 acc.consultor_id = payload.consultor_id
+                acc.destinatario = destinatario_placeholder
                 # Establecer campos de auditoría
                 acc.usuario_modificacion = payload.usuario
                 acc.fecha_modificacion = ahora
@@ -335,6 +412,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     factura_key = (tipo, asiento)
                     if factura_key not in facturas_placeholder_set:
                         # Crear nueva acción para factura que no tiene placeholder
+                        destinatario = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
                         acc = AccionFactura(
                             idcliente=payload.idcliente,
                             tercero=payload.tercero,
@@ -346,14 +424,15 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                             usuario=payload.usuario,
                             consultor_id=payload.consultor_id,
                             seguimiento_id=seguimiento_id,
+                            destinatario=destinatario,
                         )
                         db.add(acc)
                         acciones_creadas.append(acc)
         
         # Si hay acciones comunes existentes Y no estamos editando, crear nuevas acciones sin modificar las existentes
         elif acciones_con_comun:
-            logger.info(f"Creando nueva acción común para seguimiento {seguimiento_id} (hay {len(acciones_con_comun)} acciones comunes existentes)")
             # Crear nuevas acciones para todas las facturas del payload (sin modificar las existentes)
+            destinatario = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
             for f in payload.facturas:
                 tipo = (f.get("tipo") or "").strip()
                 asiento = str(f.get("asiento") or "").strip()
@@ -361,23 +440,25 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     continue
                 # Siempre crear nueva acción, incluso si ya existe una acción común para esa factura
                 # Esto permite tener múltiples acciones comunes para las mismas facturas
-                    acc = AccionFactura(
-                        idcliente=payload.idcliente,
-                        tercero=payload.tercero,
-                        tipo=tipo,
-                        asiento=asiento,
-                        accion_tipo=payload.accion_tipo,
-                        descripcion=payload.descripcion,
-                        aviso=aviso_dt,
-                        usuario=payload.usuario,
-                        consultor_id=payload.consultor_id,
-                        seguimiento_id=seguimiento_id,
-                    )
-                    db.add(acc)
-                    acciones_creadas.append(acc)
+                acc = AccionFactura(
+                    idcliente=payload.idcliente,
+                    tercero=payload.tercero,
+                    tipo=tipo,
+                    asiento=asiento,
+                    accion_tipo=payload.accion_tipo,
+                    descripcion=payload.descripcion,
+                    aviso=aviso_dt,
+                    usuario=payload.usuario,
+                    consultor_id=payload.consultor_id,
+                    seguimiento_id=seguimiento_id,
+                    destinatario=destinatario,
+                )
+                db.add(acc)
+                acciones_creadas.append(acc)
             
         else:
             # No hay acciones placeholder ni comunes, crear todas nuevas
+            destinatario = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
             for f in payload.facturas:
                 tipo = (f.get("tipo") or "").strip()
                 asiento = str(f.get("asiento") or "").strip()
@@ -394,6 +475,7 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     usuario=payload.usuario,
                     consultor_id=payload.consultor_id,
                     seguimiento_id=seguimiento_id,
+                    destinatario=destinatario,
                 )
                 db.add(acc)
                 acciones_creadas.append(acc)
@@ -439,30 +521,67 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
         logger.error("Error creando acciones de seguimiento: %s", e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudieron crear las acciones")
 
+class EliminarAccionesComunIn(BaseModel):
+    ids: Optional[List[int]] = Field(default_factory=list, description="IDs de las acciones a eliminar")
+    accion_tipo: Optional[str] = None
+    descripcion: Optional[str] = None
+    aviso: Optional[str] = None
+
+
 @router.delete("/seguimiento-acciones/{seguimiento_id}/acciones", status_code=status.HTTP_204_NO_CONTENT)
-def eliminar_acciones_de_seguimiento(seguimiento_id: int, db: Session = Depends(get_gestion_db)):
-    """Elimina todas las acciones asociadas a un seguimiento (acción común)."""
+def eliminar_acciones_de_seguimiento(
+    seguimiento_id: int, 
+    payload: Optional[EliminarAccionesComunIn] = Body(None),
+    db: Session = Depends(get_gestion_db)
+):
+    """Elimina un grupo específico de acciones comunes de un seguimiento."""
     try:
         from datetime import datetime
-        # Verificar que existan acciones con seguimiento_id
-        acciones = db.execute(
+        
+        # Obtener todas las acciones del seguimiento
+        todas_acciones = db.execute(
             select(AccionFactura).where(AccionFactura.seguimiento_id == seguimiento_id)
         ).scalars().all()
         
-        if not acciones:
+        if not todas_acciones:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontraron acciones para este seguimiento")
         
-        # Verificar que todas las acciones puedan ser eliminadas (fecha de aviso futura)
+        # Si se proporciona un payload, eliminar solo las acciones del grupo específico
+        if payload:
+            # Filtrar acciones por IDs si se proporcionan
+            if payload.ids and len(payload.ids) > 0:
+                acciones_a_eliminar = [a for a in todas_acciones if a.id in payload.ids]
+            else:
+                # Filtrar por valores de accion_tipo, descripcion, aviso
+                acciones_a_eliminar = []
+                for accion in todas_acciones:
+                    match_tipo = (payload.accion_tipo is None) or ((accion.accion_tipo or '') == (payload.accion_tipo or ''))
+                    match_descripcion = (payload.descripcion is None) or ((accion.descripcion or '') == (payload.descripcion or ''))
+                    match_aviso = True
+                    if payload.aviso:
+                        accion_aviso_str = accion.aviso.isoformat().split('T')[0] if accion.aviso else ''
+                        match_aviso = accion_aviso_str == payload.aviso
+                    
+                    if match_tipo and match_descripcion and match_aviso:
+                        acciones_a_eliminar.append(accion)
+        else:
+            # Si no se proporciona payload, eliminar todas las acciones (comportamiento anterior para compatibilidad)
+            acciones_a_eliminar = todas_acciones
+        
+        if not acciones_a_eliminar:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontraron acciones que coincidan con los criterios especificados")
+        
+        # Verificar que todas las acciones a eliminar puedan ser eliminadas (fecha de aviso futura)
         hoy = datetime.utcnow().date()
-        acciones_no_eliminables = [a for a in acciones if a.aviso and a.aviso.date() <= hoy]
+        acciones_no_eliminables = [a for a in acciones_a_eliminar if a.aviso and a.aviso.date() <= hoy]
         if acciones_no_eliminables:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"No se pueden eliminar acciones. {len(acciones_no_eliminables)} acción(es) tienen fecha de aviso pasada o de hoy."
             )
         
-        # Eliminar todas las acciones del seguimiento
-        for accion in acciones:
+        # Eliminar solo las acciones del grupo específico
+        for accion in acciones_a_eliminar:
             db.delete(accion)
         
         db.commit()

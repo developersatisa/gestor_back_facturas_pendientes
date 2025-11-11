@@ -75,6 +75,49 @@ class RepositorioRegistroFacturas:
         return [self._cambio_to_dict(x) for x in rows]
 
     # Acciones
+    def _obtener_email_consultor(self, consultor_id: Optional[int], idcliente: Optional[int] = None, tercero: Optional[str] = None) -> tuple[Optional[int], Optional[str]]:
+        """
+        Obtiene el ID del consultor y su email.
+        
+        Si se proporciona consultor_id, lo usa directamente.
+        Si no, busca el consultor asignado al cliente.
+        
+        Returns:
+            tuple: (consultor_id, email) o (None, None) si no se encuentra
+        """
+        from app.domain.models.gestion import ClienteConsultor, Consultor
+        
+        if consultor_id:
+            consultor = self.db.get(Consultor, consultor_id)
+            if consultor and consultor.email:
+                return consultor_id, consultor.email.strip() or None
+            return consultor_id, None
+        
+        # Buscar consultor asignado al cliente
+        candidatos = []
+        if idcliente is not None:
+            candidatos.append(idcliente)
+        if tercero:
+            try:
+                candidatos.append(int(str(tercero)))
+            except (TypeError, ValueError):
+                pass
+
+        for idcliente_candidato in candidatos:
+            stmt = (
+                select(ClienteConsultor)
+                .where(ClienteConsultor.idcliente == idcliente_candidato)
+                .order_by(ClienteConsultor.creado_en.desc(), ClienteConsultor.id.desc())
+                .limit(1)
+            )
+            asignacion = self.db.execute(stmt).scalars().first()
+            if asignacion:
+                consultor = self.db.get(Consultor, asignacion.consultor_id)
+                email = consultor.email.strip() if (consultor and consultor.email) else None
+                return asignacion.consultor_id, email
+        
+        return None, None
+
     def registrar_accion(
         self,
         *,
@@ -98,6 +141,8 @@ class RepositorioRegistroFacturas:
                     continue
             return None
 
+        consultor_final_id, destinatario_email = self._obtener_email_consultor(consultor_id, idcliente, tercero)
+
         item = AccionFactura(
             idcliente=idcliente,
             tercero=tercero,
@@ -107,7 +152,8 @@ class RepositorioRegistroFacturas:
             descripcion=descripcion,
             aviso=_parse_dt(aviso),
             usuario=usuario,
-            consultor_id=consultor_id,
+            consultor_id=consultor_final_id,
+            destinatario=destinatario_email,
         )
         self.db.add(item)
         self.db.commit()
@@ -169,11 +215,11 @@ class RepositorioRegistroFacturas:
     def _parse_fecha(self, valor: Optional[str]) -> Optional[date]:
         if not valor:
             return None
-            for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
-                try:
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+            try:
                 return datetime.strptime(valor, fmt).date()
-                except ValueError:
-                    continue
+            except ValueError:
+                continue
         return None
 
     def listar_pendientes_envio(
@@ -320,7 +366,7 @@ class RepositorioRegistroFacturas:
         pendientes = self.listar_pendientes_envio(
             fecha_iso=fecha_iso,
             fecha_desde_iso=fecha_desde_iso,
-            estados_excluidos=("omitida_pagada", "caducada"),
+            estados_excluidos=("omitida_pagada", "caducada", "omitida_sin_destinatario"),
         )
         if not pendientes:
             return 0
@@ -432,10 +478,15 @@ class RepositorioRegistroFacturas:
         # Enviar acciones individuales una por una
         for item in acciones_individuales:
             try:
-                notificador.notificar_accion(item)
-                item.enviada_en = datetime.utcnow()
-                item.envio_estado = "enviada"
-                enviados += 1
+                enviado = notificador.notificar_accion(item)
+                if enviado:
+                    item.enviada_en = datetime.utcnow()
+                    item.envio_estado = "enviada"
+                    enviados += 1
+                else:
+                    # No se pudo enviar (sin destinatario, sin consultor, error de email, etc.)
+                    item.envio_estado = "omitida_sin_destinatario"
+                    logger.info("Accion %s omitida: no se pudo enviar (sin destinatario o consultor)", item.id)
             except Exception as exc:
                 logger.warning("Fallo al enviar accion %s: %s", item.id, exc)
                 item.envio_estado = "fallo"
