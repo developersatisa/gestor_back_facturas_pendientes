@@ -457,7 +457,40 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 ---
 **Desarrollado por el equipo de ATISA**
 
-*Última actualización: Noviembre 2025* 
+*Última actualización: Diciembre 2025*
+
+## Mejoras recientes (Diciembre 2025)
+
+### Gestión de acciones comunes en seguimientos
+
+- **Creación de múltiples acciones comunes**: Ahora es posible crear múltiples acciones comunes para el mismo seguimiento sin que se editen las existentes. El sistema distingue correctamente entre crear una nueva acción y editar una existente mediante el parámetro `editar_accion_comun_id`.
+
+- **Edición de acciones comunes**: Corregido el problema donde no se encontraba la acción común a editar. El backend ahora incluye los IDs de las acciones en el objeto `accion_comun` devuelto por el endpoint de listado, permitiendo identificar correctamente qué acción editar.
+
+- **Eliminación selectiva de acciones comunes**: El endpoint de eliminación ahora permite eliminar solo un grupo específico de acciones comunes, en lugar de eliminar todas las acciones del seguimiento. Se puede especificar qué acciones eliminar mediante:
+  - Array de IDs de acciones (`ids`)
+  - Valores de `accion_tipo`, `descripcion` y `aviso` para identificar el grupo
+
+### Campo `destinatario` en acciones individuales
+
+- **Relleno automático del destinatario**: Cuando se crea una acción individual seleccionando un consultor en el campo "Acción dirigida a", el campo `destinatario` se rellena automáticamente con el email del consultor seleccionado.
+
+- **Refactorización del método de obtención de email**: Se ha extraído la lógica de obtención del email del consultor a un método auxiliar `_obtener_email_consultor` en `RepositorioRegistroFacturas`, mejorando la reutilización y mantenibilidad del código.
+
+### Mejoras en el script de envío de emails
+
+- **Prioridad en la resolución del destinatario**: El script de envío (`NotificadorConsultores.notificar_accion`) ahora sigue esta prioridad para obtener el destinatario:
+  1. Campo `destinatario` de la acción (si existe)
+  2. Email del consultor desde `consultor_id` (si existe)
+  3. Consultor asignado al cliente (fallback)
+
+- **Manejo de acciones sin destinatario**: Si una acción no tiene destinatario disponible, se marca con `envio_estado = "omitida_sin_destinatario"` y se excluye de futuras ejecuciones del script, evitando reintentos innecesarios.
+
+### Refactorizaciones y limpieza de código
+
+- **Eliminación de logs de depuración**: Se han eliminado todos los logs de depuración añadidos temporalmente, manteniendo solo los logs críticos necesarios para el funcionamiento del sistema.
+
+- **Optimización de llamadas**: En la creación de múltiples acciones comunes, se optimiza la llamada a `resolver_destinatario` para evitar llamadas redundantes dentro de bucles. 
 ## Cambios Recientes (Gestión / Sociedades / Registro)
 
 - Gestión en BD real (ATISA_Input): consultores (`dbo.consultores`), asignaciones (`dbo.cliente_consultor`), registro de acciones (`dbo.factura_acciones`) y cambios (`dbo.factura_cambios`). Sin claves foráneas, creación automática al arranque si hay permisos.
