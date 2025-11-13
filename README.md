@@ -486,11 +486,53 @@ Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la
 
 - **Manejo de acciones sin destinatario**: Si una acción no tiene destinatario disponible, se marca con `envio_estado = "omitida_sin_destinatario"` y se excluye de futuras ejecuciones del script, evitando reintentos innecesarios.
 
+### Actualización de acciones individuales
+
+- **Endpoint PUT `/api/facturas/acciones/{accion_id}`**: Nuevo endpoint para actualizar acciones individuales existentes, permitiendo modificar tipo, descripción, fecha de aviso y consultor asignado.
+
+- **Campos de auditoría**: Las acciones ahora incluyen `usuario_modificacion` y `fecha_modificacion` que se actualizan automáticamente cuando se modifica una acción.
+
+- **Seguimiento de acciones comunes**: Las acciones individuales pueden estar vinculadas a un seguimiento común mediante el campo `seguimiento_id`, permitiendo identificar acciones que pertenecen a un seguimiento masivo.
+
+### Notificaciones por email mejoradas
+
+- **Información completa en emails**: Los emails de notificación ahora incluyen:
+  - Nombre completo del cliente con su ID interno (formato: "Nombre del Cliente (ID)")
+  - Referencia de factura usando el ID completo (`NUM_0`, ej: "AC0025007959") en lugar del formato `VEN-asiento`
+  - Datos obtenidos desde las bases de datos de facturas y clientes
+
+- **Sesiones de base de datos dedicadas**: El sistema crea sesiones dedicadas para `RepositorioFacturas` y `RepositorioClientes` al enviar notificaciones, asegurando acceso correcto a las bases de datos corporativas.
+
+### Próximos avisos en Dashboard
+
+- **Nombre de factura completo**: El endpoint `/api/facturas/acciones/proximos-avisos` ahora incluye el campo `nombre_factura` (correspondiente a `NUM_0`) para mostrar el ID completo de la factura en el dashboard.
+
+### Acciones automáticas de reclamación
+
+- **Creación automática de acciones**: El sistema crea automáticamente acciones del sistema cuando se selecciona un cliente que tiene facturas con nivel de reclamación 1, 2 o 3. Las acciones se crean con:
+  - Tipo: "Sistema"
+  - Usuario: "Sistema"
+  - Descripción: "Reclamación automática: Nivel de reclamación {nivel} enviado el {fecha}" (fecha en formato DD/MM/YYYY)
+  - Sin fecha de aviso programada
+  - Sin consultor asignado
+
+- **Prevención de duplicados**: El sistema verifica si ya existe una acción automática para cada factura con el mismo nivel de reclamación antes de crear una nueva, evitando duplicados.
+
+- **Endpoint**: `POST /api/facturas/acciones/crear-automaticas-reclamacion`
+  - Parámetros: `idcliente` (opcional) o `tercero` (opcional, al menos uno requerido)
+  - Respuesta: Estadísticas con `acciones_creadas`, `acciones_existentes` y `facturas_procesadas`
+
+- **Integración automática**: El frontend llama automáticamente a este endpoint cuando se cargan las facturas de un cliente, ejecutándose en segundo plano sin afectar la experiencia del usuario.
+
 ### Refactorizaciones y limpieza de código
 
 - **Eliminación de logs de depuración**: Se han eliminado todos los logs de depuración añadidos temporalmente, manteniendo solo los logs críticos necesarios para el funcionamiento del sistema.
 
-- **Optimización de llamadas**: En la creación de múltiples acciones comunes, se optimiza la llamada a `resolver_destinatario` para evitar llamadas redundantes dentro de bucles. 
+- **Optimización de llamadas**: En la creación de múltiples acciones comunes, se optimiza la llamada a `resolver_destinatario` para evitar llamadas redundantes dentro de bucles.
+
+- **Métodos auxiliares mejorados**: 
+  - Refactorización de `obtener_cliente` y `obtener_factura_especifica` en `RepositorioFacturas` con métodos auxiliares más pequeños y enfocados (`_buscar_cliente_exacto`, `_buscar_cliente_flexible`, `_procesar_resultado_cliente`, `_extraer_nombre_factura`).
+  - Refactorización de `crear_acciones_automaticas_reclamacion` en `RepositorioRegistroFacturas` con métodos auxiliares (`_formatear_fecha_reclamacion`, `_normalizar_idcliente`, `_existe_accion_reclamacion`, `_crear_accion_reclamacion_automatica`) para mejor mantenibilidad y testabilidad. 
 ## Cambios Recientes (Gestión / Sociedades / Registro)
 
 - Gestión en BD real (ATISA_Input): consultores (`dbo.consultores`), asignaciones (`dbo.cliente_consultor`), registro de acciones (`dbo.factura_acciones`) y cambios (`dbo.factura_cambios`). Sin claves foráneas, creación automática al arranque si hay permisos.

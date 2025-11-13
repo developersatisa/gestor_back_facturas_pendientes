@@ -3,15 +3,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, EmailStr, validator
 from typing import Literal
 from sqlalchemy.orm import Session
-from app.config.database import get_gestion_db, init_gestion_db, GestionBase
+from app.config.database import get_gestion_db, init_gestion_db, GestionBase, get_clientes_db, get_facturas_db
 from app.infrastructure.repositorio_gestion import RepositorioGestion
+from app.infrastructure.repositorio_facturas_simple import RepositorioClientes, RepositorioFacturas
 
 router = APIRouter(prefix="/api", tags=["Consultores"])
 
 
 class ConsultorIn(BaseModel):
     nombre: str = Field(..., min_length=2, max_length=150)
-    estado: Literal['activo', 'inactivo', 'vacaciones'] = 'activo'
+    estado: Literal['activo', 'inactivo', 'vacaciones', 'eliminado'] = 'activo'
     email: EmailStr = Field(..., description="Correo electrónico del consultor (obligatorio)")
 
     @validator('email', pre=True)
@@ -70,6 +71,32 @@ def actualizar_consultor(consultor_id: int, payload: ConsultorIn, repo: Reposito
     return updated
 
 
+def get_repo_clientes(db: Session = Depends(get_clientes_db)):
+    return RepositorioClientes(db)
+
+
+def get_repo_facturas(db: Session = Depends(get_facturas_db)):
+    return RepositorioFacturas(db)
+
+
+@router.get("/consultores/{consultor_id}/info-eliminacion")
+def obtener_info_eliminacion_consultor(
+    consultor_id: int, 
+    repo: RepositorioGestion = Depends(get_repo),
+    repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
+    repo_facturas: RepositorioFacturas = Depends(get_repo_facturas)
+):
+    """Obtiene información sobre el impacto de eliminar un consultor."""
+    info = repo.obtener_info_eliminacion_consultor(
+        consultor_id, 
+        repo_clientes=repo_clientes,
+        repo_facturas=repo_facturas
+    )
+    if not info.get("existe"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consultor no encontrado")
+    return info
+
+
 @router.delete("/consultores/{consultor_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar_consultor(consultor_id: int, repo: RepositorioGestion = Depends(get_repo)):
     ok = repo.eliminar_consultor(consultor_id)
@@ -88,7 +115,10 @@ def obtener_asignacion(idcliente: int, repo: RepositorioGestion = Depends(get_re
 
 @router.post("/consultores/asignar")
 def asignar_consultor(payload: AsignacionIn, repo: RepositorioGestion = Depends(get_repo)):
-    return repo.asignar_consultor(idcliente=payload.idcliente, consultor_id=payload.consultor_id)
+    try:
+        return repo.asignar_consultor(idcliente=payload.idcliente, consultor_id=payload.consultor_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.delete("/consultores/asignacion/{idcliente}", status_code=status.HTTP_204_NO_CONTENT)

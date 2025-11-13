@@ -29,6 +29,7 @@ def create_consultores_table(conn) -> None:
                 nombre NVARCHAR(150) NOT NULL,
                 estado NVARCHAR(20) NOT NULL CONSTRAINT DF_consultores_estado DEFAULT('activo'),
                 email NVARCHAR(255) NULL,
+                eliminado BIT NOT NULL CONSTRAINT DF_consultores_eliminado DEFAULT(0),
                 creado_en DATETIME2 NOT NULL CONSTRAINT DF_consultores_creado DEFAULT(SYSDATETIME())
             );
         END
@@ -82,6 +83,7 @@ def migrate_factura_acciones_columns(conn) -> None:
 
 def migrate_consultores_columns(conn) -> None:
     """Añade columnas nuevas a consultores si faltan."""
+    # Agregar columna email si no existe
     conn.execute(text("IF COL_LENGTH('dbo.consultores','email') IS NULL ALTER TABLE dbo.consultores ADD email NVARCHAR(255) NULL;"))
 
 

@@ -440,21 +440,21 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
                     continue
                 # Siempre crear nueva acción, incluso si ya existe una acción común para esa factura
                 # Esto permite tener múltiples acciones comunes para las mismas facturas
-                acc = AccionFactura(
-                    idcliente=payload.idcliente,
-                    tercero=payload.tercero,
-                    tipo=tipo,
-                    asiento=asiento,
-                    accion_tipo=payload.accion_tipo,
-                    descripcion=payload.descripcion,
-                    aviso=aviso_dt,
-                    usuario=payload.usuario,
-                    consultor_id=payload.consultor_id,
-                    seguimiento_id=seguimiento_id,
+                    acc = AccionFactura(
+                        idcliente=payload.idcliente,
+                        tercero=payload.tercero,
+                        tipo=tipo,
+                        asiento=asiento,
+                        accion_tipo=payload.accion_tipo,
+                        descripcion=payload.descripcion,
+                        aviso=aviso_dt,
+                        usuario=payload.usuario,
+                        consultor_id=payload.consultor_id,
+                        seguimiento_id=seguimiento_id,
                     destinatario=destinatario,
-                )
-                db.add(acc)
-                acciones_creadas.append(acc)
+                    )
+                    db.add(acc)
+                    acciones_creadas.append(acc)
             
         else:
             # No hay acciones placeholder ni comunes, crear todas nuevas

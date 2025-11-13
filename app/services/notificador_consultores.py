@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.models.gestion import AccionFactura, ClienteConsultor, Consultor
+from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
 logger = logging.getLogger("notificaciones.consultores")
 
 
@@ -28,9 +29,10 @@ class NotificadorConsultores:
       - Email (SMTP configurable mediante variables de entorno).
     """
 
-    def __init__(self, db_session: Session):
+    def __init__(self, db_session: Session, repo_facturas=None, repo_clientes=None):
         self.db = db_session
-        pass
+        self.repo_facturas = repo_facturas
+        self.repo_clientes = repo_clientes
 
     def notificar_accion(self, accion: AccionFactura) -> bool:
         """
@@ -162,9 +164,23 @@ class NotificadorConsultores:
         consultor: DatosConsultor,
     ) -> tuple[str, str]:
         cliente_id = consultor.asignacion.idcliente if consultor.asignacion else accion.idcliente
-        referencia = f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
+        
+        # Obtener nombre del cliente
+        nombre_cliente = self._obtener_nombre_cliente(accion)
+        
+        # Obtener nombre de factura (ID de factura como SE0025001972)
+        nombre_factura = self._obtener_nombre_factura(accion)
+        referencia = nombre_factura or f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
+        
         aviso = self._formatear_datetime(accion.aviso)
         creado = self._formatear_datetime(accion.creado_en)
+
+        # Construir texto del cliente: "Nombre del cliente (ID interno)"
+        texto_cliente = nombre_cliente
+        if cliente_id:
+            texto_cliente = f"{nombre_cliente} ({cliente_id})" if nombre_cliente else f"Cliente {cliente_id}"
+        elif accion.tercero:
+            texto_cliente = nombre_cliente if nombre_cliente else f"Cliente {accion.tercero}"
 
         subject = f"[Gestion Facturas] Accion ({accion.accion_tipo or 'N/A'}) - Cliente {accion.tercero or cliente_id}"
 
@@ -176,8 +192,7 @@ class NotificadorConsultores:
             "",
             f"Se ha registrado una nueva accion.",
             f"- Tipo de accion (canal): {canal.lower()}",
-            f"- Cliente (tercero): {accion.tercero or 'Desconocido'}",
-            f"- ID Cliente interno: {cliente_id or 'N/D'}",
+            f"- Cliente: {texto_cliente or 'Desconocido'}",
             f"- Referencia: {referencia or 'N/D'}",
             f"- Descripcion: {accion.descripcion or 'Sin descripcion'}",
             f"- Fecha de aviso: {aviso}",
@@ -251,6 +266,16 @@ class NotificadorConsultores:
 
         subject = f"[Gestion Facturas] Acciones agrupadas ({canal}) - Cliente {primera.tercero or cliente_id} - {len(acciones)} facturas"
 
+        # Obtener nombre del cliente
+        nombre_cliente = self._obtener_nombre_cliente(primera)
+        
+        # Construir texto del cliente: "Nombre del cliente (ID interno)"
+        texto_cliente = nombre_cliente
+        if cliente_id:
+            texto_cliente = f"{nombre_cliente} ({cliente_id})" if nombre_cliente else f"Cliente {cliente_id}"
+        elif primera.tercero:
+            texto_cliente = nombre_cliente if nombre_cliente else f"Cliente {primera.tercero}"
+
         cuerpo = [
             f"Hola {consultor.entidad.nombre or 'consultor'},",
             "",
@@ -260,8 +285,7 @@ class NotificadorConsultores:
             "📋 INFORMACIÓN GENERAL DEL SEGUIMIENTO",
             "═══════════════════════════════════════════════════════════",
             f"Tipo de acción (canal): {canal.lower()}",
-            f"Cliente (tercero): {primera.tercero or 'Desconocido'}",
-            f"ID Cliente interno: {cliente_id or 'N/D'}",
+            f"Cliente: {texto_cliente or 'Desconocido'}",
             f"Descripción común: {primera.descripcion or 'Sin descripción'}",
             f"Fecha de aviso: {aviso}",
             f"Registrado por: {primera.usuario or 'Sistema'} el {creado}",
@@ -273,7 +297,9 @@ class NotificadorConsultores:
 
         # Listar todas las facturas de forma clara
         for idx, accion in enumerate(acciones, 1):
-            referencia = f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
+            # Obtener nombre de factura (ID de factura como SE0025001972)
+            nombre_factura = self._obtener_nombre_factura(accion)
+            referencia = nombre_factura or f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
             cuerpo.append(f"{idx}. Referencia: {referencia or 'N/D'}")
 
         cuerpo.extend([
@@ -288,6 +314,72 @@ class NotificadorConsultores:
         ])
 
         return subject, "\n".join(cuerpo)
+
+    def _obtener_nombre_cliente(self, accion: AccionFactura) -> Optional[str]:
+        """Obtiene el nombre del cliente desde la base de datos"""
+        try:
+            # Crear repositorio si no existe
+            if not self.repo_clientes:
+                self.repo_clientes = RepositorioClientes(self.db)
+            
+            # Intentar obtener el cliente usando tercero sin ceros (formato en BD)
+            tercero_sin_ceros = str(int(accion.tercero)) if accion.tercero and accion.tercero.isdigit() else accion.tercero
+            datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
+            if datos_cliente:
+                return datos_cliente.get('razsoc') or None
+        except Exception as e:
+            logger.debug(f"Error obteniendo nombre del cliente: {e}")
+        
+        return None
+
+    def _obtener_nombre_factura(self, accion: AccionFactura) -> Optional[str]:
+        """Obtiene el nombre de factura (ID de factura completo como AC0025007959) desde la base de datos"""
+        try:
+            # Crear repositorio si no existe
+            if not self.repo_facturas:
+                self.repo_facturas = RepositorioFacturas(self.db)
+            
+            tercero = (accion.tercero or "").strip()
+            if not tercero:
+                logger.debug(f"No se puede obtener nombre_factura: tercero vacío para acción {accion.id}")
+                return None
+            
+            tipo_objetivo = (accion.tipo or "").strip()
+            asiento_objetivo = str(accion.asiento or "").strip()
+            
+            if not tipo_objetivo or not asiento_objetivo:
+                logger.debug(f"No se puede obtener nombre_factura: tipo='{tipo_objetivo}' o asiento='{asiento_objetivo}' vacío para acción {accion.id}")
+                return None
+            
+            # Buscar la factura específica
+            factura_detalle = self.repo_facturas.obtener_factura_especifica(
+                tercero=tercero,
+                tipo=tipo_objetivo,
+                asiento=asiento_objetivo,
+            )
+            
+            if factura_detalle:
+                # El campo nombre_factura viene de NUM_0 en la BD (ej: "AC0025007959")
+                nombre_factura = factura_detalle.get("nombre_factura")
+                if nombre_factura:
+                    return str(nombre_factura).strip()
+            
+            # Intentar búsqueda alternativa: buscar en todas las facturas del cliente
+            try:
+                facturas_cliente = self.repo_facturas.obtener_facturas(tercero=tercero)
+                for factura in facturas_cliente:
+                    if (str(factura.get("tipo", "")).strip() == tipo_objetivo and 
+                        str(factura.get("asiento", "")).strip() == asiento_objetivo):
+                        nombre_alt = factura.get("nombre_factura")
+                        if nombre_alt:
+                            return str(nombre_alt).strip()
+            except Exception:
+                pass
+                    
+        except Exception:
+            pass
+        
+        return None
 
     @staticmethod
     def _formatear_datetime(valor: Optional[datetime]) -> str:

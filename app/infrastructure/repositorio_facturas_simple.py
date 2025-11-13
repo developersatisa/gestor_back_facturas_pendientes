@@ -267,6 +267,12 @@ class RepositorioFacturas:
         tercero_str = str(tercero).strip()
         tercero_sin_ceros = tercero_str.lstrip('0') or tercero_str
 
+        # Convertir asiento a entero si es posible, para la comparación en SQL
+        try:
+            asiento_int = int(asiento) if asiento else None
+        except (ValueError, TypeError):
+            asiento_int = None
+
         query = """
         SELECT TOP 1
             TYP_0 as tipo,
@@ -281,7 +287,10 @@ class RepositorioFacturas:
             FLGCLE_0 as check_pago
         FROM x3v12.ATISAINT.GACCDUDATE
         WHERE TYP_0 = :tipo
-          AND ACCNUM_0 = :asiento
+          AND (
+            ACCNUM_0 = :asiento_int
+            OR CAST(ACCNUM_0 AS VARCHAR(50)) = :asiento
+          )
           AND SAC_0 IN ('4300','4302')
           AND CPY_0 IN ('S005','S001','S010')
           AND (
@@ -294,7 +303,8 @@ class RepositorioFacturas:
 
         params = {
             "tipo": tipo,
-            "asiento": asiento,
+            "asiento": str(asiento).strip(),
+            "asiento_int": asiento_int,
             "tercero": tercero_str,
             "tercero_sin_ceros": tercero_sin_ceros,
             "len_tercero": len(tercero_sin_ceros) or 1,
@@ -302,6 +312,40 @@ class RepositorioFacturas:
 
         result = self.db.execute(text(query), params)
         row = result.fetchone()
+        
+        # Si no se encuentra con los filtros restrictivos, intentar sin filtros de SAC_0 y CPY_0
+        if not row:
+            query_sin_filtros = """
+            SELECT TOP 1
+                TYP_0 as tipo,
+                ACCNUM_0 as asiento,
+                NUM_0 as nombre_factura,
+                CPY_0 as sociedad,
+                SAC_0 as colectivo,
+                BPR_0 as tercero,
+                DUDDAT_0 as vencimiento,
+                AMTCUR_0 as importe,
+                PAYCUR_0 as pago,
+                FLGCLE_0 as check_pago
+            FROM x3v12.ATISAINT.GACCDUDATE
+            WHERE TYP_0 = :tipo
+              AND (
+                ACCNUM_0 = :asiento_int
+                OR CAST(ACCNUM_0 AS VARCHAR(50)) = :asiento
+              )
+              AND (
+                    BPR_0 = :tercero
+                    OR LTRIM(RTRIM(BPR_0)) = :tercero
+                    OR LTRIM(RTRIM(BPR_0)) = :tercero_sin_ceros
+                    OR RIGHT(LTRIM(RTRIM(BPR_0)), :len_tercero) = :tercero_sin_ceros
+                  )
+            """
+            try:
+                result_sin_filtros = self.db.execute(text(query_sin_filtros), params)
+                row = result_sin_filtros.fetchone()
+            except Exception:
+                pass
+        
         if not row:
             return None
 
@@ -309,10 +353,13 @@ class RepositorioFacturas:
         pago = float(row.pago) if row.pago is not None else 0.0
         pendiente = round(importe - pago, 2)
 
+        # Obtener nombre_factura (NUM_0) con manejo robusto
+        nombre_factura = self._extraer_nombre_factura(row)
+
         return {
             "tipo": row.tipo,
             "asiento": row.asiento,
-            "nombre_factura": getattr(row, "nombre_factura", None),
+            "nombre_factura": nombre_factura,
             "sociedad": row.sociedad,
             "colectivo": row.colectivo,
             "tercero": str(row.tercero).strip() if getattr(row, "tercero", None) is not None else None,
@@ -322,26 +369,79 @@ class RepositorioFacturas:
             "pendiente": pendiente,
             "check_pago": row.check_pago,
         }
+    
+    def _extraer_nombre_factura(self, row) -> Optional[str]:
+        """Extrae el nombre de factura (NUM_0) de una fila de resultado SQL."""
+        try:
+            # Intentar con el alias del SELECT
+            nombre_factura = getattr(row, "nombre_factura", None)
+            if nombre_factura:
+                return str(nombre_factura).strip()
+            
+            # Intentar acceder como diccionario (SQLAlchemy Row)
+            if hasattr(row, '_mapping'):
+                nombre_factura = row._mapping.get('nombre_factura')
+                if nombre_factura:
+                    return str(nombre_factura).strip()
+            
+            # Fallback: intentar por índice (NUM_0 es la tercera columna, índice 2)
+            if hasattr(row, '__getitem__'):
+                try:
+                    nombre_factura = row[2]
+                    if nombre_factura:
+                        return str(nombre_factura).strip()
+                except (IndexError, TypeError):
+                    pass
+        except Exception:
+            pass
+        
+        return None
 
 class RepositorioClientes:
     def __init__(self, db_session: Session):
         self.db = db_session
 
     def obtener_cliente(self, codigo_tercero: str) -> Optional[Dict[str, Any]]:
-        """Obtiene datos de un cliente específico"""
+        """
+        Obtiene datos de un cliente específico.
+        
+        IMPORTANTE: Busca primero coincidencias exactas para evitar falsos positivos.
+        Por ejemplo, al buscar '7535' no debe encontrar '17535' aunque termine en '7535'.
+        """
         import logging
         logger = logging.getLogger(__name__)
         
         codigo_original = str(codigo_tercero).strip()
         codigo_trim = codigo_original.lstrip('0') or codigo_original
-        len_trim = len(codigo_trim) or 1
-        codigo_int = None
+        
         try:
             codigo_int = int(codigo_trim)
         except Exception:
             codigo_int = None
 
-        # Primera consulta: coincidencia exacta y variaciones
+        # Buscar primero con coincidencias exactas
+        row = self._buscar_cliente_exacto(codigo_original, codigo_trim, codigo_int)
+        
+        # Si no se encontró, intentar búsqueda más flexible con restricción de longitud
+        if not row and codigo_int is not None:
+            row = self._buscar_cliente_flexible(codigo_trim, codigo_int)
+        
+        if row:
+            return self._procesar_resultado_cliente(row, codigo_tercero)
+        
+        logger.debug(f"No se encontró cliente para código '{codigo_tercero}'")
+        return None
+
+    def _buscar_cliente_exacto(
+        self, 
+        codigo_original: str, 
+        codigo_trim: str, 
+        codigo_int: Optional[int]
+    ) -> Optional[Any]:
+        """Busca cliente con coincidencias exactas"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         query = """
         SELECT TOP 1
             LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) AS idcliente,
@@ -352,73 +452,91 @@ class RepositorioClientes:
         FROM dbo.clientes 
         WHERE
             LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_tercero
-            OR CAST(idcliente AS NVARCHAR(50)) = :codigo_tercero
             OR LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim
-            OR RIGHT(LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))), :len_trim) = :codigo_trim
-            OR RIGHT(CAST(idcliente AS NVARCHAR(50)), :len_trim) = :codigo_trim
             OR (
                 :codigo_int IS NOT NULL
                 AND TRY_CONVERT(INT, LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) = :codigo_int
+                AND LEN(LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) <= LEN(:codigo_trim) + 1
             )
+        ORDER BY 
+            CASE 
+                WHEN LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim THEN 1
+                WHEN LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_tercero THEN 2
+                ELSE 3
+            END
         """
         
-        parametros = {
-            "codigo_tercero": codigo_original,
-            "codigo_trim": codigo_trim,
-            "len_trim": len_trim,
-            "codigo_int": codigo_int,
-        }
+        try:
+            result = self.db.execute(text(query), {
+                "codigo_tercero": codigo_original,
+                "codigo_trim": codigo_trim,
+                "codigo_int": codigo_int,
+            })
+            return result.fetchone()
+        except Exception as e:
+            logger.warning(f"Error en búsqueda exacta de cliente: {e}")
+            return None
+
+    def _buscar_cliente_flexible(self, codigo_trim: str, codigo_int: int) -> Optional[Any]:
+        """
+        Busca cliente con comparación numérica pero con restricción de longitud.
+        
+        IMPORTANTE: Si buscamos '7535' (4 dígitos), solo busca idcliente con 4 o 5 caracteres
+        (ej: '7535' o '07535'). NO busca '17535' (5 dígitos) aunque numéricamente termine en '7535'.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        len_buscado = len(codigo_trim)
+        query = """
+        SELECT TOP 1
+            LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) AS idcliente,
+            NULLIF(LTRIM(RTRIM(razsoc)), '') AS razsoc,
+            NULLIF(LTRIM(RTRIM(cif)), '') AS cif,
+            NULLIF(LTRIM(RTRIM(cif_empresa)), '') AS cif_empresa,
+            NULLIF(LTRIM(RTRIM(cif_factura)), '') AS cif_factura
+        FROM dbo.clientes 
+        WHERE TRY_CONVERT(INT, LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) = :codigo_int
+          AND LEN(LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) BETWEEN :len_min AND :len_max
+        ORDER BY 
+            CASE 
+                WHEN LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim THEN 1
+                ELSE 2
+            END,
+            LEN(LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) ASC
+        """
         
         try:
-            result = self.db.execute(text(query), parametros)
-            row = result.fetchone()
-            
-            # Intento alterno: intercambiar códigos si siguen sin coincidir
-            if not row and codigo_trim and codigo_trim != codigo_original:
-                parametros_alt = {
-                    "codigo_tercero": codigo_trim,
-                    "codigo_trim": codigo_original,
-                    "len_trim": len(codigo_original) or 1,
-                    "codigo_int": codigo_int,
-                }
-                result_alt = self.db.execute(text(query), parametros_alt)
-                row = result_alt.fetchone()
-            
-            # Si aún no hay resultado, intentar búsqueda por número entero directamente
-            if not row and codigo_int is not None:
-                query_directa = """
-                SELECT TOP 1
-                    LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) AS idcliente,
-                    NULLIF(LTRIM(RTRIM(razsoc)), '') AS razsoc,
-                    NULLIF(LTRIM(RTRIM(cif)), '') AS cif,
-                    NULLIF(LTRIM(RTRIM(cif_empresa)), '') AS cif_empresa,
-                    NULLIF(LTRIM(RTRIM(cif_factura)), '') AS cif_factura
-                FROM dbo.clientes 
-                WHERE idcliente = :codigo_int
-                """
-                result_directa = self.db.execute(text(query_directa), {"codigo_int": codigo_int})
-                row = result_directa.fetchone()
-            
-            if row:
-                def _clean(value):
-                    if value is None:
-                        return None
-                    texto = str(value).strip()
-                    return texto or None
-                
-                cliente_data = {
-                    'idcliente': _clean(getattr(row, "idcliente", None)),
-                    'razsoc': _clean(getattr(row, "razsoc", None)),
-                    'cif': _clean(getattr(row, "cif", None)),
-                    'cif_empresa': _clean(getattr(row, "cif_empresa", None)),
-                    'cif_factura': _clean(getattr(row, "cif_factura", None)),
-                }
-                logger.debug(f"Cliente encontrado para código '{codigo_tercero}': {cliente_data.get('razsoc', 'Sin nombre')}")
-                return cliente_data
-            else:
-                logger.debug(f"No se encontró cliente para código '{codigo_tercero}' (original: '{codigo_original}', trim: '{codigo_trim}', int: {codigo_int})")
+            result = self.db.execute(text(query), {
+                "codigo_int": codigo_int,
+                "codigo_trim": codigo_trim,
+                "len_min": len_buscado,
+                "len_max": len_buscado + 1
+            })
+            return result.fetchone()
         except Exception as e:
-            logger.warning(f"Error al buscar cliente '{codigo_tercero}': {e}")
-        
+            logger.warning(f"Error en búsqueda flexible de cliente: {e}")
         return None
+
+    def _procesar_resultado_cliente(self, row: Any, codigo_tercero: str) -> Dict[str, Any]:
+        """Procesa el resultado de la consulta y retorna un diccionario limpio"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        def _clean(value):
+            if value is None:
+                return None
+            texto = str(value).strip()
+            return texto or None
+        
+        cliente_data = {
+            'idcliente': _clean(getattr(row, "idcliente", None)),
+            'razsoc': _clean(getattr(row, "razsoc", None)),
+            'cif': _clean(getattr(row, "cif", None)),
+            'cif_empresa': _clean(getattr(row, "cif_empresa", None)),
+            'cif_factura': _clean(getattr(row, "cif_factura", None)),
+        }
+        
+        logger.debug(f"Cliente encontrado para código '{codigo_tercero}': {cliente_data.get('razsoc', 'Sin nombre')}")
+        return cliente_data
  

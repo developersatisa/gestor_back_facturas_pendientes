@@ -1,5 +1,5 @@
 ﻿from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Numeric, Text
+from sqlalchemy import Column, Integer, String, DateTime, Numeric, Text, Boolean
 from app.config.database import GestionBase
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -12,6 +12,8 @@ class Consultor(GestionBase):
     # estado: 'activo' | 'inactivo' | 'vacaciones'
     estado = Column(String(20), nullable=False, default="activo")
     email = Column(String(255), nullable=True)
+    # eliminado: False = activo, True = eliminado (borrado lógico)
+    eliminado = Column(Boolean, nullable=False, default=False)
     # Campos de Teams eliminados: usar email como UPN para Teams
     creado_en = Column(DateTime, nullable=False, default=datetime.utcnow)
 

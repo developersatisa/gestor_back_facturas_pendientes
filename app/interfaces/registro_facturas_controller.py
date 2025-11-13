@@ -72,6 +72,9 @@ class AccionFacturaOut(BaseModel):
     destinatario: Optional[str]
     envio_estado: Optional[str]
     creado_en: str
+    usuario_modificacion: Optional[str] = None
+    fecha_modificacion: Optional[str] = None
+    seguimiento_id: Optional[int] = None
 
 
 def get_repo(db: Session = Depends(get_gestion_db)):
@@ -110,6 +113,26 @@ def listar_acciones(idcliente: Optional[int] = None, tercero: Optional[str] = No
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error obteniendo acciones de factura")
 
 
+class ActualizarAccionIn(BaseModel):
+    accion_tipo: Optional[str] = None
+    descripcion: Optional[str] = None
+    aviso: Optional[str] = None
+    consultor_id: Optional[int] = None
+    usuario: Optional[str] = None
+
+
+@router.put("/facturas/acciones/{accion_id}", response_model=AccionFacturaOut)
+def actualizar_accion(accion_id: int, payload: ActualizarAccionIn, repo: RepositorioRegistroFacturas = Depends(get_repo)):
+    try:
+        return repo.actualizar_accion(accion_id, **payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error actualizando acción de factura")
+
+
 @router.delete("/facturas/acciones/{accion_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar_accion(accion_id: int, repo: RepositorioRegistroFacturas = Depends(get_repo)):
     try:
@@ -144,6 +167,7 @@ class ProximoAvisoOut(BaseModel):
     tercero: str
     tipo: str
     asiento: str
+    nombre_factura: Optional[str] = None
     accion_tipo: Optional[str]
     descripcion: Optional[str]
     aviso: Optional[str]
@@ -175,7 +199,7 @@ def listar_proximos_avisos(
     """Obtiene los próximos avisos (acciones con fecha de aviso >= hoy) de todos los clientes y consultores.
     Solo incluye avisos de clientes que tienen facturas pendientes."""
     try:
-        avisos = repo.listar_proximos_avisos(limit=limit * 2)  # Obtener más para compensar los filtrados
+        avisos = repo.listar_proximos_avisos(limit=limit * 2, repo_facturas=repo_facturas)  # Obtener más para compensar los filtrados
         
         resultado = []
         for aviso in avisos:
@@ -198,3 +222,34 @@ def listar_proximos_avisos(
         return resultado
     except Exception as e:
         raise handle_error(e, "obtener próximos avisos", "Error obteniendo próximos avisos")
+
+
+class CrearAccionesAutomaticasReclamacionIn(BaseModel):
+    idcliente: Optional[int] = None
+    tercero: Optional[str] = None
+
+
+class CrearAccionesAutomaticasReclamacionOut(BaseModel):
+    acciones_creadas: int
+    acciones_existentes: int
+    facturas_procesadas: int
+
+
+@router.post("/facturas/acciones/crear-automaticas-reclamacion", response_model=CrearAccionesAutomaticasReclamacionOut)
+def crear_acciones_automaticas_reclamacion(
+    payload: CrearAccionesAutomaticasReclamacionIn,
+    repo: RepositorioRegistroFacturas = Depends(get_repo),
+    repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
+):
+    """Crea acciones automáticas del sistema para facturas con nivel de reclamación 1, 2 o 3."""
+    try:
+        resultado = repo.crear_acciones_automaticas_reclamacion(
+            idcliente=payload.idcliente,
+            tercero=payload.tercero,
+            repo_facturas=repo_facturas,
+        )
+        return resultado
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error creando acciones automáticas: {str(e)}")
