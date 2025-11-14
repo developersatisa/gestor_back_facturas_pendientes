@@ -1,9 +1,6 @@
 from typing import Dict, Any, List
 from datetime import date
 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
-import logging
-
-logger = logging.getLogger(__name__)
 
 class ObtenerEstadisticasFacturas:
     def __init__(self, repo_facturas: RepositorioFacturas, repo_clientes: RepositorioClientes):
@@ -18,8 +15,6 @@ class ObtenerEstadisticasFacturas:
         - Monto total adeudado (en moneda original)
         - Lista de empresas con sus montos y datos de cliente (limitado a 50)
         """
-        logger.info("Iniciando cálculo de estadísticas...")
-        
         # Si el motor no es MSSQL (p.ej. SQLite en desarrollo), devolver valores seguros
         try:
             bind = self.repo_facturas.db.get_bind()  # type: ignore[attr-defined]
@@ -157,18 +152,15 @@ class ObtenerEstadisticasFacturas:
         from sqlalchemy import text
         
         try:
-            logger.info("Calculando totales unificados para dashboard...")
             res_tot = self.repo_facturas.db.execute(text(query_totales)).fetchone()
             total_empresas = int(res_tot.total_empresas_pendientes or 0)
             total_facturas = int(res_tot.total_facturas_pendientes or 0)
             monto_total = float(res_tot.monto_total_adeudado or 0.0)
             
-            logger.info("Ejecutando consulta 4: Empresas con montos...")
             # Consulta 4: Empresas con montos (LIMITADO A 50)
             result_empresas_montos = self.repo_facturas.db.execute(text(query_empresas_montos))
             empresas_montos = []
             
-            logger.info("Procesando empresas y buscando clientes...")
             for i, row in enumerate(result_empresas_montos):
                 tercero_original = row.tercero_original
                 try:
@@ -176,8 +168,6 @@ class ObtenerEstadisticasFacturas:
                 except Exception:
                     tercero_sin_ceros = str(tercero_original)
                 monto = float(row.monto_total) if row.monto_total else 0.0
-                
-                logger.info(f"Procesando empresa {i+1}: {tercero_original} -> {tercero_sin_ceros}")
                 
                 # Buscar datos del cliente en la base de datos de clientes usando el tercero sin ceros
                 datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
@@ -190,9 +180,6 @@ class ObtenerEstadisticasFacturas:
                 }
                 empresas_montos.append(empresa_info)
             
-            logger.info(f"Procesamiento completado. {len(empresas_montos)} empresas procesadas.")
-
-            logger.info("Calculando montos por sociedad (CPY_0)...")
             result_sociedades = self.repo_facturas.db.execute(text(query_sociedades_montos))
             sociedades_montos: List[Dict[str, Any]] = []
             # Intentar enriquecer con nombres si existen en repositorio (constante en infra)
@@ -209,7 +196,6 @@ class ObtenerEstadisticasFacturas:
                     "monto": monto,
                 })
 
-            logger.info("Obteniendo facturas más vencidas...")
             result_vencidas = self.repo_facturas.db.execute(text(query_facturas_mas_vencidas))
             facturas_vencidas: List[Dict[str, Any]] = []
             for row in result_vencidas:

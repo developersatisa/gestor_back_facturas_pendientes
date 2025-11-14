@@ -218,6 +218,7 @@ class RepositorioGestion:
         if not consultor or consultor.eliminado == True:
             return False
         
+        res = None
         try:
             # 1. Eliminar todas las asociaciones con clientes
             stmt_delete_asignaciones = delete(ClienteConsultor).where(
@@ -234,11 +235,11 @@ class RepositorioGestion:
             )
             res = self.db.execute(stmt_update)
             self.db.commit()
-            
-            return res.rowcount > 0
         except Exception as e:
             self.db.rollback()
             raise
+        
+        return res.rowcount > 0 if res else False
 
     # Asignaciones
     def obtener_asignacion(self, idcliente: int) -> Optional[Dict[str, Any]]:

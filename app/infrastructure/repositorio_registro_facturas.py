@@ -336,10 +336,6 @@ class RepositorioRegistroFacturas:
         
         # Si encontramos alguna acción del sistema con esta combinación, ya existe
         if len(acciones_existentes) > 0:
-            logger.debug(
-                f"Acción del sistema ya existe para factura {tipo}-{asiento} nivel {nivel} (tercero: {tercero}). "
-                f"Encontradas {len(acciones_existentes)} acciones existentes."
-            )
             return True
         
         return False
@@ -561,7 +557,6 @@ class RepositorioRegistroFacturas:
             # Verificar y corregir valores si es necesario
             self._verificar_y_corregir_valores_accion(accion_id, fecha_reclamacion_dt)
             
-            logger.info(f"Acción del sistema creada para factura {tipo}-{asiento} nivel {nivel}")
             return True
             
         except Exception as e:
@@ -626,21 +621,14 @@ class RepositorioRegistroFacturas:
             # Verificación doble: antes y dentro del método de creación
             if self._existe_accion_reclamacion(tercero_factura, tipo, str(asiento), nivel):
                 acciones_existentes += 1
-                logger.debug(f"Acción del sistema ya existe para {tipo}-{asiento} nivel {nivel}, omitiendo creación")
                 continue
             
             # Crear acción automática (el método también verifica duplicados internamente)
             if self._crear_accion_reclamacion_automatica(factura, idcliente, tercero):
                 acciones_creadas += 1
-                logger.info(f"Acción del sistema creada para factura {tipo}-{asiento} nivel {nivel}")
             else:
                 # Si no se creó, probablemente ya existía (verificado dentro del método)
                 acciones_existentes += 1
-        
-        logger.info(
-            f"Procesadas {len(facturas_con_reclamacion)} facturas con reclamación. "
-            f"Creadas {acciones_creadas} acciones nuevas, {acciones_existentes} ya existían."
-        )
         
         return {
             "acciones_creadas": acciones_creadas,
@@ -917,29 +905,9 @@ class RepositorioRegistroFacturas:
         if not pendientes:
             if not simular:
                 self.db.commit()
-            if mostrar_omitidas and omitidas:
-                for info in omitidas:
-                    logger.info(
-                        "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
-                        info["id"],
-                        info["idcliente"],
-                        info["tercero"],
-                        info["factura"],
-                        info["aviso"],
-                    )
             return 0
 
         if solo_filtrar:
-            if mostrar_omitidas and omitidas:
-                for info in omitidas:
-                    logger.info(
-                        "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
-                        info["id"],
-                        info["idcliente"],
-                        info["tercero"],
-                        info["factura"],
-                        info["aviso"],
-                    )
             resultado = []
             for accion in pendientes:
                 resultado.append(
@@ -959,15 +927,6 @@ class RepositorioRegistroFacturas:
             return resultado
 
         if simular:
-            for accion in pendientes:
-                logger.info(
-                    "SIMULACION envío -> acción %s | tercero=%s | factura=%s",
-                    accion.id,
-                    accion.tercero or "N/D",
-                    getattr(accion, "_nombre_factura_resuelta", None)
-                    or getattr(accion, "nombre_factura", None)
-                    or f"{accion.tipo or 'N/D'}-{accion.asiento or 'N/D'}",
-                )
             return len(pendientes)
         
         from app.services.notificador_consultores import NotificadorConsultores
@@ -1001,7 +960,6 @@ class RepositorioRegistroFacturas:
                 else:
                     # No se pudo enviar (sin destinatario, sin consultor, error de email, etc.)
                     item.envio_estado = "omitida_sin_destinatario"
-                    logger.info("Accion %s omitida: no se pudo enviar (sin destinatario o consultor)", item.id)
             except Exception as exc:
                 logger.warning("Fallo al enviar accion %s: %s", item.id, exc)
                 item.envio_estado = "fallo"
@@ -1017,16 +975,6 @@ class RepositorioRegistroFacturas:
                     item.envio_estado = "fallo"
         
         self.db.commit()
-        if mostrar_omitidas and omitidas:
-            for info in omitidas:
-                logger.info(
-                    "ACCION OMITIDA (factura pagada) -> id=%s | idcliente=%s | tercero=%s | factura=%s | aviso=%s",
-                    info["id"],
-                    info["idcliente"],
-                    info["tercero"],
-                    info["factura"],
-                    info["aviso"],
-                )
         return enviados
 
     @staticmethod

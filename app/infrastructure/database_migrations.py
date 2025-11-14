@@ -184,7 +184,6 @@ def initialize_gestion_tables(engine) -> None:
             migrate_factura_acciones_columns(conn)
             migrate_consultores_columns(conn)
             create_cliente_consultor_indexes(conn)
-            logger.info("Tablas de gestión inicializadas correctamente")
     except Exception as e:
         logger.warning(f"Error inicializando tablas de gestión: {e}")
 
@@ -202,7 +201,6 @@ def initialize_facturas_pago_table(engine) -> None:
     try:
         with engine.begin() as conn:
             create_facturas_pago_schema_and_table(conn)
-            logger.info("Tabla de pagos de facturas inicializada correctamente")
     except Exception as e:
         logger.warning(f"Error inicializando tabla de pagos: {e}")
 

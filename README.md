@@ -1,586 +1,151 @@
-﻿# 🧾 Sistema de Gestión de Facturas Pendientes - ATISA
+# Facturas Impagadas - Backend (FastAPI)
 
-## 📋 Descripción del Proyecto
+Servicio FastAPI que expone la API corporativa de facturas pendientes de ATISA. Consolida datos de Sage X3 (SQL Server) y bases auxiliares SQLite/MariaDB, gestiona consultores y registra acciones comerciales. Incluye autenticacion Azure AD (MSAL) y genera reportes (Excel, resumenes KPI) consumidos por el frontend Vite/React.
 
-Este proyecto es un **backend robusto y escalable** desarrollado para **ATISA** que se encarga de gestionar las facturas impagadas y pendientes de los distintos clientes. El sistema proporciona una API REST completa que permite consultar, filtrar y analizar el estado financiero de las facturas de manera eficiente.
+---
 
-## 🏗️ Arquitectura del Sistema
+## Contenido express
 
-El proyecto sigue una **arquitectura limpia (Clean Architecture)** con separación clara de responsabilidades:
+1. [Resumen funcional](#resumen-funcional)  
+2. [Arquitectura](#arquitectura)  
+3. [Requisitos](#requisitos)  
+4. [Configuracion local](#configuracion-local)  
+5. [Variables de entorno](#variables-de-entorno)  
+6. [Ejecucion diaria](#ejecucion-diaria)  
+7. [Routers y endpoints](#routers-y-endpoints)  
+8. [Scripts y jobs](#scripts-y-jobs)  
+9. [Testing](#testing)  
+10. [Despliegue](#despliegue)  
+11. [Soporte rapido](#soporte-rapido)
+
+---
+
+## Resumen funcional
+
+- Dashboard de KPI: totales por sociedad, niveles de reclamacion y clientes con deuda.
+- Buscador avanzado de facturas (por numero, asiento, sociedad) con enriquecimiento de datos de cliente.
+- API de consultores: alta/baja logica, asignaciones, proximos avisos y resumen de cartera.
+- Registro de acciones: crear, editar, eliminar y listar acciones comerciales y cambios de estado.
+- Seguimientos simples y seguimientos por lotes (cabecera + detalle de facturas involucradas).
+- Exportador Excel agrupado por sociedad para reportes ejecutivos.
+- Autenticacion Azure AD con callback `/auth/callback`, bridge `/auth/return` y diagnostico `/auth/debug`.
+- Servicios auxiliares: envio programado de correos/Teams y healthcheck (`/health`).
+
+## Arquitectura
 
 ```
-📁 facturas_backend/
-├── 🐍 app/
-│   ├── 📁 application/          # Casos de uso (Use Cases)
-│   ├── 📁 domain/              # Modelos de dominio y lógica de negocio
-│   ├── 📁 infrastructure/      # Repositorios y acceso a datos
-│   ├── 📁 interfaces/          # Controladores y endpoints de la API
-│   └── 📁 config/              # Configuración de base de datos y settings
-├── 🧪 tests/                   # Pruebas unitarias y de integración
-├── 📋 requirements.txt          # Dependencias del proyecto
-└── 🚀 main.py                  # Punto de entrada de la aplicación
+facturas_backend/
+  app/
+    application/      # Casos de uso (obtener estadisticas, resumenes, etc.)
+    auth/             # Rutas y helpers MSAL + JWT
+    config/           # Settings, SQLAlchemy, inicializacion de tablas
+    domain/           # Modelos ORM y constantes
+    infrastructure/   # Repositorios contra SQL Server / SQLite
+    interfaces/       # Routers FastAPI
+    services/         # Azure Graph, notificador, servicios de negocio
+    utils/            # Helpers varios (errores, formato)
+  scripts/            # Jobs ejecutables (ej. enviar_acciones_pendientes)
+  migrations/         # Tablas auxiliares
+  main.py             # Punto de entrada
+  requirements.txt
 ```
 
-## 🚀 Inicio rápido (Backend)
+## Requisitos
 
-1. Clona y entra en el repositorio:
-   ```bash
-   git clone <repository-url>
-   cd facturas_impagadas/facturas_backend
-   ```
-2. Crea el entorno virtual e instala dependencias:
-   ```bash
-   python3.11 -m venv venv
-   source venv/bin/activate      # En Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-3. Carga variables (`.env`) si corresponde y arranca en desarrollo:
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
-4. Consulta la API en `http://localhost:8000` y la documentación en `http://localhost:8000/docs`.
+- Python 3.11
+- SQL Server con driver ODBC 18 (msodbcsql18). En local se puede usar SQLite por defecto.
+- Credenciales Azure AD (CLIENT_ID, TENANT_ID, CLIENT_SECRET) y redirect autorizado.
+- Acceso a las vistas/tables `x3v12.ATISAINT.GACCDUDATE`, historial y pagos.
+- Para produccion Linux: `unixODBC` + `msodbcsql18` instalados.
 
-> Para el frontend revisa `facturas_frontend/README.md`.
+## Configuracion local
 
-## 🚀 Tecnologías Utilizadas
-
-### Backend
-- **FastAPI**: Framework web moderno y rápido para Python
-- **Python 3.11**: Versión estable y optimizada
-- **SQLAlchemy**: ORM para gestión de base de datos
-- **Pydantic**: Validación de datos y serialización
-- **PyODBC**: Conector para base de datos SQL Server
-
-### Base de Datos
-- **MariaDB/MySQL**: Sistema de gestión de base de datos relacional
-- **SQL Server**: Base de datos corporativa de ATISA
-
-### DevOps & Testing
-- **Pytest**: Framework de testing
-- **Uvicorn**: Servidor ASGI para FastAPI
-
-## 📊 Funcionalidades Principales
-
-### 1. 🧾 Gestión de Facturas
-- **Consulta de facturas por cliente**: Obtener todas las facturas de un cliente específico
-- **Filtrado avanzado**: Filtrar por fechas, nivel de reclamación, importes, etc.
-- **Agrupación por cliente**: Resumen de facturas pendientes por cliente
-- **Estadísticas generales**: Métricas y KPIs del sistema de facturación
-
-### 2. 👥 Gestión de Clientes
-- **Información del cliente**: Datos completos del cliente asociado a cada factura
-- **Resumen financiero**: Estado de cuenta consolidado por cliente
-- **Historial de pagos**: Seguimiento de pagos y vencimientos
-
-### 3. 📈 Análisis y Reportes
-- **Estadísticas en tiempo real**: Métricas actualizadas del sistema
-- **Filtros personalizables**: Consultas específicas según necesidades del negocio
-- **Exportación de datos**: Preparado para integración con sistemas de reporting
-
-## 🔌 Endpoints de la API
-
-### Base URL
-```
-http://localhost:8000
-```
-
-### Endpoints Disponibles
-
-#### 🧾 Facturas
-```http
-GET /api/facturas-cliente/{idcliente}
-```
-**Descripción**: Obtiene todas las facturas de un cliente específico
-**Parámetros**:
-- `idcliente` (path): Identificador único del cliente
-
-**Respuesta**: Lista de facturas con datos del cliente incluidos
-
-#### 👥 Clientes
-```http
-GET /api/clientes-con-resumen
-```
-**Descripción**: Obtiene un resumen de clientes con sus facturas agrupadas
-**Parámetros de consulta**:
-- `tercero` (opcional): Filtro por código de cliente
-- `fecha_desde` (opcional): Fecha de inicio para el filtro
-- `fecha_hasta` (opcional): Fecha de fin para el filtro
-- `nivel_reclamacion` (opcional): Filtro por nivel de reclamación
-
-**Respuesta**: Lista de clientes con resumen de facturas pendientes
-
-#### 📊 Estadísticas
-```http
-GET /api/estadisticas
-```
-**Descripción**: Obtiene estadísticas generales del sistema de facturación
-**Respuesta**: Métricas consolidadas del sistema
-
-## 🔄 Estado actual del backend (resumen)
-
-- `/api/estadisticas` devuelve campos extra usados por el frontend:
-  - `sociedades_con_montos`: deuda agregada por sociedad (CPY_0).
-  - `facturas_mas_vencidas`: listado de facturas vencidas (ordenadas) para tabla con paginación.
-- `/api/clientes-con-resumen`:
-  - Aplica filtro por sociedades `CPY_0 IN ('S005','S001','S010')` para que el conteo de facturas y deuda coincidan con negocio.
-  - Evita el error de PyODBC “Connection is busy with results for another command” consumiendo primero la consulta de sociedades y después la principal.
-  - El controlador captura excepciones y responde `[]` para no romper el frontend (se deja traza en logs).
-
-#### 🏥 Health Check
-```http
-GET /health
-```
-**Descripción**: Verificación del estado de la API
-**Respuesta**: Estado del servicio y versión
-
-## 🗄️ Modelo de Datos
-
-### Entidad Factura
-```python
-class Factura(BaseModel):
-    tipo: str                    # Tipo de factura
-    asiento: int                 # Número de asiento contable
-    sociedad: str                # Código de sociedad
-    planta: str                  # Código de planta
-    moneda: str                  # Moneda de la factura
-    colectivo: str               # Colectivo contable
-    tercero: str                 # Código del cliente
-    vencimiento: datetime        # Fecha de vencimiento
-    forma_pago: str              # Forma de pago
-    sentido: int                 # Sentido de la operación
-    importe: Decimal             # Importe de la factura
-    pago: Optional[Decimal]      # Importe pagado (opcional)
-    nivel_reclamacion: Optional[int]      # Nivel de reclamación
-    fecha_reclamacion: Optional[datetime] # Fecha de reclamación
-    check_pago: Optional[int]    # Indicador de pago
-```
-
-## 🚀 Instalación y Configuración
-
-### Prerrequisitos
-- Python 3.11 o superior
-- MariaDB/MySQL o SQL Server
-
-### 1. Clonar el Repositorio
 ```bash
-git clone https://github.com/developersatisa/gestor_back_facturas_pendientes.git
-cd gestor_back_facturas_pendientes
-```
-
-### 2. Crear Entorno Virtual
-```bash
+git clone <repo>
+cd facturas_impagadas/facturas_backend
 python -m venv venv
-# En Windows:
-venv\Scripts\activate
-# En Linux/Mac:
-source venv/bin/activate
-```
-
-### 3. Instalar Dependencias
-```bash
+venv\Scripts\activate      # Linux/Mac: source venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 4. Configurar Variables de Entorno
-Crear archivo `.env` en la raíz del proyecto:
-```env
-# Configuración de Base de Datos
-DATABASE_URL_FACTURAS=your_database_connection_string
-DATABASE_URL_CLIENTES=your_database_connection_string
-
-# Configuración de la API
-API_HOST=0.0.0.0
-API_PORT=8000
-DEBUG=True
-
-# Notificador de consultores (opcional)
-NOTIFIER_SMTP_HOST=smtp.servidor.com
-NOTIFIER_SMTP_PORT=587
-NOTIFIER_SMTP_USER=usuario
-NOTIFIER_SMTP_PASSWORD=clave
-NOTIFIER_SMTP_FROM=notificaciones@dominio.com
-NOTIFIER_SMTP_STARTTLS=1
-
-```
-
-### 5. Ejecutar la Aplicación
-```bash
-# Desarrollo
+# Opcional: copiar .env.local -> .env y ajustar cadenas de conexion
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
-
-# Producción
-uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+La documentacion interactiva queda en `http://localhost:8000/docs`.
 
-## 🧪 Testing
+## Variables de entorno
 
-### Ejecutar Pruebas
-```bash
-# Todas las pruebas
-pytest
+| Clave | Explicacion |
+| --- | --- |
+| `DATABASE_URL_FACTURAS` | Conexion principal (SQL Server). Por defecto `sqlite:///./facturas.db` |
+| `DATABASE_URL_CLIENTES` | Fuente de clientes (SQL Server). Por defecto `sqlite:///./clientes.db` |
+| `GESTION_DATABASE_URL` | BD para consultores/asignaciones. Por defecto `sqlite:///./gestion_facturas.db` |
+| `HISTORIAL_DATABASE_URL` | BD local para historial (`sqlite:///./facturas_historial.db`) |
+| `AUTH_REDIRECT_URI` | URL registrada en Azure (`https://demoimpagos.atisa.es/auth/callback`) |
+| `FRONTEND_BASE_URL` | Donde redirigir despues del login (produccion: `https://demoimpagos.atisa.es`) |
+| `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TENANT_ID` | Credenciales MSAL |
+| `AZURE_ALLOWED_DOMAINS` | Lista (coma) de dominios permitidos para login |
+| `JWT_SECRET`, `JWT_EXPIRES_SECONDS` | Firma y expiracion del token local |
+| `ODBC_DRIVER_NAME` | Forzar nombre del driver (fallback: `ODBC Driver 18 for SQL Server`) |
+| `NOTIFIER_SMTP_*`, `NOTIFIER_TEAMS_*` | Configuracion del notificador de consultores |
 
-# Pruebas específicas
-pytest tests/test_facturas_endpoint.py
+Guarda estos valores en un `.env` y FastAPI los cargara via `dotenv`.
 
-# Con cobertura
-pytest --cov=app tests/
-```
+## Ejecucion diaria
 
-### Estructura de Tests
-```
-tests/
-├── test_facturas_endpoint.py      # Pruebas de endpoints de facturas
-└── test_obtener_facturas_filtradas.py  # Pruebas de lógica de negocio
-```
+- **Levantar API**: `uvicorn main:app --reload --port 8520` o usar `python main.py` (arranca en 8520).
+- **Compilar rapido**: `python -m py_compile app/interfaces/*.py` (igual que indica `GUIA_DESPLIEGUE.md`).
+- **Healthcheck**: `curl http://127.0.0.1:8520/health`.
+- **Diagnostico Azure**: `curl http://127.0.0.1:8520/auth/debug`.
+- **Validar drivers ODBC**: `python -c "from app.config.database import log_odbc_env_diagnostics; log_odbc_env_diagnostics()"`.
 
-## 🔧 Configuración de Base de Datos
+## Routers y endpoints
 
-### Conexión SQL Server
-```python
-# app/config/database.py
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+| Archivo | Prefijo | Highlights |
+| --- | --- | --- |
+| `app/interfaces/facturas_controller.py` | `/api` | Facturas por cliente, busqueda por numero, resumenes por cliente/sociedad, estadisticas, Excel, historial de pagos, acciones, cambios |
+| `app/interfaces/historial_controller.py` | `/api` | CRUD liviano de historial de facturas locales |
+| `app/interfaces/consultores_controller.py` | `/api` | CRUD de consultores, asignaciones, proximos avisos, exportaciones |
+| `app/interfaces/registro_facturas_controller.py` | `/api` | Registro estructurado de cambios y comentarios |
+| `app/interfaces/seguimientos_controller.py` | `/api` | Crear/listar seguimientos basicos |
+| `app/interfaces/seguimiento_acciones_controller.py` | `/api` | Cabeceras, acciones y facturas asociadas a seguimientos complejos |
+| `app/auth/routes.py` | `/auth` | Login Azure, callback, `me`, logout local/azure, debug |
+| `main.py` | `/auth/return`, `/health` | Bridge HTML que guarda el token y health endpoint |
 
-DATABASE_URL = "mssql+pyodbc://username:password@server/database?driver=ODBC+Driver+17+for+SQL+Server"
+Todos los controladores usan repositorios en `app/infrastructure` (SQLAlchemy) y casos de uso en `app/application` para mantener la logica desacoplada. Helpers en `app/utils` estandarizan errores y formato.
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-```
+## Scripts y jobs
 
-### Conexión MariaDB/MySQL
-```python
-# app/config/database.py
-DATABASE_URL = "mysql+pymysql://username:password@localhost/database_name"
+- `scripts/enviar_acciones_pendientes.py`: envia emails o mensajes de Teams a consultores con acciones proximas. Se ejecuta via `cron` en produccion (ver entrada exacta en `GUIA_DESPLIEGUE.md`). Localmente:
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-```
-
-## 📚 Casos de Uso
-
-### 1. Obtener Facturas de un Cliente
-```python
-from app.application.obtener_facturas_filtradas import ObtenerFacturasFiltradas
-
-# Ejecutar caso de uso
-use_case = ObtenerFacturasFiltradas(repositorio)
-facturas = use_case.execute(tercero="CLIENTE001")
-```
-
-### 2. Calcular Estadísticas
-```python
-from app.application.obtener_estadisticas_facturas import ObtenerEstadisticasFacturas
-
-# Ejecutar caso de uso
-use_case = ObtenerEstadisticasFacturas(repositorio_facturas, repositorio_clientes)
-estadisticas = use_case.execute()
-```
-
-### 3. Agrupar Facturas por Cliente
-```python
-from app.application.obtener_facturas_agrupadas_por_cliente import ObtenerFacturasAgrupadasPorCliente
-
-# Ejecutar caso de uso
-use_case = ObtenerFacturasAgrupadasPorCliente(repositorio_facturas, repositorio_clientes)
-clientes_con_facturas = use_case.execute(fecha_desde="2024-01-01")
-```
-
-## 🔒 Seguridad y Configuración
-
-### CORS
-La API está configurada para permitir conexiones desde:
-- Frontend local (puerto 5173)
-- Frontend de desarrollo (puerto 3000)
-- IPs específicas de la red corporativa
-- Configuración temporal para desarrollo
-
-### Logging
-- Nivel de logging configurado en INFO
-- Logs de operaciones de facturas
-- Logs de errores y excepciones
-
-### Manejo de Errores
-- Respuestas HTTP apropiadas
-- Logging detallado de errores
-- Manejo de excepciones en todos los endpoints
-
-## 📈 Monitoreo y Logs
-
-### Health Check
-```bash
-curl http://localhost:8000/health
-```
-
-### Logs de la Aplicación
-Los logs se generan automáticamente y incluyen:
-- Operaciones de consulta de facturas
-- Errores de base de datos
-- Métricas de rendimiento
-- Accesos a la API
-
-## 🚀 Despliegue en Producción
-
-### Variables de Entorno de Producción
-```env
-DEBUG=False
-LOG_LEVEL=WARNING
-DATABASE_URL_FACTURAS=production_connection_string
-DATABASE_URL_CLIENTES=production_connection_string
-# Notificador de consultores (opcional)
-NOTIFIER_SMTP_HOST=smtp.servidor.com
-NOTIFIER_SMTP_PORT=587
-NOTIFIER_SMTP_USER=usuario
-NOTIFIER_SMTP_PASSWORD=clave
-NOTIFIER_SMTP_FROM=notificaciones@dominio.com
-NOTIFIER_SMTP_STARTTLS=1
-
-```
-
-### Configuración del Servidor
-```bash
-# Usando systemctl (recomendado)
-sudo systemctl start gestor-facturas-backend
-sudo systemctl enable gestor-facturas-backend
-
-# Verificar estado
-sudo systemctl status gestor-facturas-backend
-```
-
-### Monitoreo
-- Health checks automáticos
-- Logs centralizados
-- Métricas de rendimiento
-- Alertas de errores
-
-### Despliegue operativo
-Cuando quieras llevar los cambios a producción:
-
-1. Actualiza el código y dependencias:
-   ```bash
-   cd /home/produccion/facturas_impagadas/facturas_backend
-   git pull origin master
-   source venv/bin/activate
-   pip install -r requirements.txt
-   deactivate
-   ```
-2. Reinicia el servicio systemd y verifica:
-   ```bash
-   sudo systemctl restart facturas-backend.service
-   sudo systemctl status facturas-backend.service
-   curl http://127.0.0.1:8520/health
-   ```
-
-### Gestión diaria con systemd
-- Ver estado: `sudo systemctl status facturas-backend.service`
-- Reiniciar: `sudo systemctl restart facturas-backend.service`
-- Detener / arrancar: `sudo systemctl stop|start facturas-backend.service`
-- Logs en vivo: `sudo journalctl -u facturas-backend.service -f`
-- Logs recientes: `sudo journalctl -u facturas-backend.service --since "1 hour ago"`
-
-### Diagnóstico rápido
-- ¿Puerto ocupado? `sudo lsof -i :8520`
-- ¿Servicio falló? Revisa `sudo journalctl -xeu facturas-backend.service`
-- ¿Dependencias? `source venv/bin/activate && pip install -r requirements.txt`
-
-### Seguridad básica
-- Abrir puerto únicamente si usas acceso directo:
   ```bash
-  sudo ufw allow 8520
-  sudo ufw reload
-  ```
-- Recomendada cuenta dedicada:
-  ```bash
-  sudo useradd -r -s /bin/false facturas
-  sudo chown -R facturas:facturas /home/produccion/facturas_impagadas
-  ```
-
----
-
-## 📚 Documentación relacionada
-- Frontend React/Vite: `facturas_frontend/README.md`
-
-## 🧱 Estructura general del repositorio
-```
-facturas_impagadas/
-├── facturas_frontend/      # Aplicación React + Vite (UI)
-│   └── README.md
-├── facturas_backend/       # Este backend FastAPI
-│   └── README.md
-├── systemd/                # Servicios para producción
-│   ├── facturas-backend.service
-│   └── facturas-frontend.service
-└── README_PRODUCCION.md    # Pasos de despliegue end-to-end
-```
-
-## 🤝 Contribución al Proyecto
-
-### Flujo de Trabajo
-1. Fork del repositorio
-2. Crear rama feature: `git checkout -b feature/nueva-funcionalidad`
-3. Commit de cambios: `git commit -m "Agregar nueva funcionalidad"`
-4. Push a la rama: `git push origin feature/nueva-funcionalidad`
-5. Crear Pull Request
-
-### Estándares de Código
-- Seguir PEP 8 para Python
-- Documentar funciones y clases
-- Incluir pruebas para nuevas funcionalidades
-- Mantener cobertura de código alta
-
-## 📞 Soporte y Contacto
-
-### Equipo de Desarrollo
-- **Desarrollador Principal**: Angel Rodriguez
-- **Email**: angel.rodriguez@atisa.es
-- **Organización**: ATISA
-
-### Repositorio
-- **GitHub**: [https://github.com/developersatisa/gestor_back_facturas_pendientes](https://github.com/developersatisa/gestor_back_facturas_pendientes)
-- **Issues**: Reportar bugs y solicitar funcionalidades
-- **Wiki**: Documentación adicional y guías
-
-## 📄 Licencia
-
-Este proyecto es propiedad de **ATISA** y está destinado para uso interno de la empresa.
-
-## 🔄 Historial de Versiones
-
-### v1.0.0 (Actual)
-- ✅ API REST completa para gestión de facturas
-- ✅ Integración con base de datos corporativa
-- ✅ Sistema de filtrado y consultas avanzadas
-- ✅ Arquitectura limpia y escalable
-- ✅ Documentación completa
-- ✅ Tests unitarios
-
----
-**Desarrollado por el equipo de ATISA**
-
-*Última actualización: Diciembre 2025*
-
-## Mejoras recientes (Diciembre 2025)
-
-### Gestión de acciones comunes en seguimientos
-
-- **Creación de múltiples acciones comunes**: Ahora es posible crear múltiples acciones comunes para el mismo seguimiento sin que se editen las existentes. El sistema distingue correctamente entre crear una nueva acción y editar una existente mediante el parámetro `editar_accion_comun_id`.
-
-- **Edición de acciones comunes**: Corregido el problema donde no se encontraba la acción común a editar. El backend ahora incluye los IDs de las acciones en el objeto `accion_comun` devuelto por el endpoint de listado, permitiendo identificar correctamente qué acción editar.
-
-- **Eliminación selectiva de acciones comunes**: El endpoint de eliminación ahora permite eliminar solo un grupo específico de acciones comunes, en lugar de eliminar todas las acciones del seguimiento. Se puede especificar qué acciones eliminar mediante:
-  - Array de IDs de acciones (`ids`)
-  - Valores de `accion_tipo`, `descripcion` y `aviso` para identificar el grupo
-
-### Campo `destinatario` en acciones individuales
-
-- **Relleno automático del destinatario**: Cuando se crea una acción individual seleccionando un consultor en el campo "Acción dirigida a", el campo `destinatario` se rellena automáticamente con el email del consultor seleccionado.
-
-- **Refactorización del método de obtención de email**: Se ha extraído la lógica de obtención del email del consultor a un método auxiliar `_obtener_email_consultor` en `RepositorioRegistroFacturas`, mejorando la reutilización y mantenibilidad del código.
-
-### Mejoras en el script de envío de emails
-
-- **Prioridad en la resolución del destinatario**: El script de envío (`NotificadorConsultores.notificar_accion`) ahora sigue esta prioridad para obtener el destinatario:
-  1. Campo `destinatario` de la acción (si existe)
-  2. Email del consultor desde `consultor_id` (si existe)
-  3. Consultor asignado al cliente (fallback)
-
-- **Manejo de acciones sin destinatario**: Si una acción no tiene destinatario disponible, se marca con `envio_estado = "omitida_sin_destinatario"` y se excluye de futuras ejecuciones del script, evitando reintentos innecesarios.
-
-### Actualización de acciones individuales
-
-- **Endpoint PUT `/api/facturas/acciones/{accion_id}`**: Nuevo endpoint para actualizar acciones individuales existentes, permitiendo modificar tipo, descripción, fecha de aviso y consultor asignado.
-
-- **Campos de auditoría**: Las acciones ahora incluyen `usuario_modificacion` y `fecha_modificacion` que se actualizan automáticamente cuando se modifica una acción.
-
-- **Seguimiento de acciones comunes**: Las acciones individuales pueden estar vinculadas a un seguimiento común mediante el campo `seguimiento_id`, permitiendo identificar acciones que pertenecen a un seguimiento masivo.
-
-### Notificaciones por email mejoradas
-
-- **Información completa en emails**: Los emails de notificación ahora incluyen:
-  - Nombre completo del cliente con su ID interno (formato: "Nombre del Cliente (ID)")
-  - Referencia de factura usando el ID completo (`NUM_0`, ej: "AC0025007959") en lugar del formato `VEN-asiento`
-  - Datos obtenidos desde las bases de datos de facturas y clientes
-
-- **Sesiones de base de datos dedicadas**: El sistema crea sesiones dedicadas para `RepositorioFacturas` y `RepositorioClientes` al enviar notificaciones, asegurando acceso correcto a las bases de datos corporativas.
-
-### Próximos avisos en Dashboard
-
-- **Nombre de factura completo**: El endpoint `/api/facturas/acciones/proximos-avisos` ahora incluye el campo `nombre_factura` (correspondiente a `NUM_0`) para mostrar el ID completo de la factura en el dashboard.
-
-### Acciones automáticas de reclamación
-
-- **Creación automática de acciones**: El sistema crea automáticamente acciones del sistema cuando se selecciona un cliente que tiene facturas con nivel de reclamación 1, 2 o 3. Las acciones se crean con:
-  - Tipo: "Sistema"
-  - Usuario: "Sistema"
-  - Descripción: "Reclamación automática: Nivel de reclamación {nivel} enviado el {fecha}" (fecha en formato DD/MM/YYYY)
-  - Sin fecha de aviso programada
-  - Sin consultor asignado
-
-- **Prevención de duplicados**: El sistema verifica si ya existe una acción automática para cada factura con el mismo nivel de reclamación antes de crear una nueva, evitando duplicados.
-
-- **Endpoint**: `POST /api/facturas/acciones/crear-automaticas-reclamacion`
-  - Parámetros: `idcliente` (opcional) o `tercero` (opcional, al menos uno requerido)
-  - Respuesta: Estadísticas con `acciones_creadas`, `acciones_existentes` y `facturas_procesadas`
-
-- **Integración automática**: El frontend llama automáticamente a este endpoint cuando se cargan las facturas de un cliente, ejecutándose en segundo plano sin afectar la experiencia del usuario.
-
-### Refactorizaciones y limpieza de código
-
-- **Eliminación de logs de depuración**: Se han eliminado todos los logs de depuración añadidos temporalmente, manteniendo solo los logs críticos necesarios para el funcionamiento del sistema.
-
-- **Optimización de llamadas**: En la creación de múltiples acciones comunes, se optimiza la llamada a `resolver_destinatario` para evitar llamadas redundantes dentro de bucles.
-
-- **Métodos auxiliares mejorados**: 
-  - Refactorización de `obtener_cliente` y `obtener_factura_especifica` en `RepositorioFacturas` con métodos auxiliares más pequeños y enfocados (`_buscar_cliente_exacto`, `_buscar_cliente_flexible`, `_procesar_resultado_cliente`, `_extraer_nombre_factura`).
-  - Refactorización de `crear_acciones_automaticas_reclamacion` en `RepositorioRegistroFacturas` con métodos auxiliares (`_formatear_fecha_reclamacion`, `_normalizar_idcliente`, `_existe_accion_reclamacion`, `_crear_accion_reclamacion_automatica`) para mejor mantenibilidad y testabilidad. 
-## Cambios Recientes (Gestión / Sociedades / Registro)
-
-- Gestión en BD real (ATISA_Input): consultores (`dbo.consultores`), asignaciones (`dbo.cliente_consultor`), registro de acciones (`dbo.factura_acciones`) y cambios (`dbo.factura_cambios`). Sin claves foráneas, creación automática al arranque si hay permisos.
-- Endpoints nuevos:
-  - Consultores: `GET/POST/PUT/DELETE /api/consultores`
-  - Asignación: `GET /api/consultores/asignacion/{idcliente}`, `POST /api/consultores/asignar`, `DELETE /api/consultores/asignacion/{idcliente}`, `GET /api/consultores/asignaciones`
-  - Registro de facturas: `POST/GET /api/facturas/acciones`, `POST/GET /api/facturas/cambios`
-- Columnas de registro:
-  - `factura_acciones`: `idcliente`, `tercero (BPR_0)`, `tipo (TYP_0)`, `asiento (ACCNUM_0)`, `accion_tipo`, `descripcion`, `aviso`, `usuario`, `creado_en`.
-  - `factura_cambios`: `idcliente`, `tercero`, `tipo`, `asiento`, `numero_anterior/numero_nuevo`, `monto_anterior/monto_nuevo`, `vencimiento_anterior/vencimiento_nuevo`, `motivo`, `usuario`, `creado_en`.
-- Filtro por sociedades (CPY_0): todas las consultas de facturas y estadísticas limitadas a `S005` (Grupo Atisa BPO), `S001` (Asesores Titulados), `S010` (Selier by Atisa). Endpoints aceptan `?sociedad=` para acotar.
-// Nota: El criterio de selección vuelve al original del proyecto.
-- Etiqueta de sociedad en respuestas de facturas: se añade `sociedad_nombre` junto a `sociedad`.
-- Nombre de factura: se añade `nombre_factura` mapeado desde `NUM_0` en X3.
-- Solo se consideran facturas vencidas en consultas: DUDDAT_0 < GETDATE().
-
-### Automatización de avisos por correo
-
-- Script CLI dedicado `facturas_backend/scripts/enviar_acciones_pendientes.py` que emite las acciones cuya fecha de aviso ya venció. Carga las variables de entorno vía `.env`, reutiliza `RepositorioRegistroFacturas.enviar_pendientes` y deja trazas legibles.
-- Ejecución manual (útil para diagnóstico):
-  ```bash
-  cd facturas_backend
   source venv/bin/activate
-  python scripts/enviar_acciones_pendientes.py --log-level DEBUG
+  python scripts/enviar_acciones_pendientes.py --dry-run
   ```
-- Programación con cron (ejemplo cada 5 minutos, como root):
-  ```cron
-  */5 * * * * cd /ruta/al/proyecto/facturas_backend && /usr/bin/env bash -lc 'source /ruta/al/venv/bin/activate && python scripts/enviar_acciones_pendientes.py >> /var/log/facturas_acciones.log 2>&1'
-  ```
-  - Asegúrate de `chmod +x` al script y de crear el log (`sudo touch /var/log/facturas_acciones.log`).
-  - Define las variables SMTP (`NOTIFIER_SMTP_*`) en un entorno visible para cron (`/etc/environment` o similar).
 
-### Mejoras en búsqueda y normalización de datos (Noviembre 2025)
+- Services esperados en produccion: `facturas-backend.service` (API) y `facturas-frontend.service`. El script anterior se agenda desde `crontab` apuntando al mismo entorno virtual.
 
-- **Normalización de IDs de clientes**: El sistema ahora maneja correctamente IDs con y sin ceros a la izquierda, espacios extra y variaciones de formato para garantizar consistencia en las búsquedas.
-- **Mejoras en `obtener_cliente`**: 
-  - Búsqueda robusta con múltiples fallbacks (string normalizado, string original, integer)
-  - Manejo de valores NULL y strings vacíos usando `NULLIF` en SQL
-  - Logging detallado para debugging de problemas de búsqueda
-- **Búsqueda de facturas mejorada**: 
-  - `buscar_por_numero` ahora incluye todas las facturas (pagadas y pendientes)
-  - Nueva función `obtener_factura_especifica` para buscar facturas sin filtros de fecha o estado
-- **Script de envío de emails**:
-  - Verificación de facturas pendientes antes de enviar emails
-  - Soporte para facturas no vencidas pero con saldo pendiente
-  - Caché en memoria para evitar consultas redundantes a la BD
-  - Flags `--solo-filtrar` y `--mostrar-omitidas` para debugging
-- **Correcciones de código**:
-  - Corrección de errores de indentación en múltiples archivos
-  - Mejora en el manejo de errores y logging
+## Testing
 
+- Ejecuta `pytest` para las pruebas incluidas (mock de repositorios, helpers, etc.).
+- No hay formateador automatico configurado; manten PEP8 o agrega `ruff/black` si lo necesitas.
+- Antes de hacer push revisa importaciones con `python -m py_compile ...` como indica la guia.
+
+## Despliegue
+
+Flujo basico (resumen, revisa `GUIA_DESPLIEGUE.md` para el detalle):
+
+1. En local: `python -m py_compile` sobre los controladores listados y `npm run build` en el frontend.
+2. `git add . && git commit && git push origin master` (backend y frontend por separado).
+3. En IASERVER: `git pull origin master` dentro de `/home/produccion/facturas_impagadas/facturas_backend`.
+4. Reinicia el servicio: `sudo systemctl restart facturas-backend.service` y verifica `sudo systemctl status ...`.
+5. Comprueba `/health`, `/auth/debug` y el login real. Si cambiaste nginx, ejecuta `sudo nginx -t` y `sudo systemctl reload nginx`.
+
+## Soporte rapido
+
+- **Login falla**: revisa `AUTH_REDIRECT_URI`, `FRONTEND_BASE_URL` y el bloque `/auth` de nginx (orden y destino). Usa `/auth/debug` para confirmar configuracion.
+- **Error IM002**: el servidor no encuentra el driver ODBC. Corre `log_odbc_env_diagnostics()` para listar drivers instalados.
+- **Consultores no se crean**: borra `gestion_facturas.db` local o confirma permisos sobre la BD configurada en `GESTION_DATABASE_URL`.
+- **Excel de sociedades devuelve 503**: solo funciona con SQL Server; con SQLite se bloquea para evitar datos inconsistentes.
+- **Acciones automaticas**: si el cron no envia correos, revisa `/var/log/facturas_acciones.log` en el servidor y los `NOTIFIER_SMTP_*` definidos.
+
+Documenta cualquier cambio relevante tambien en `GUIA_DESPLIEGUE.md` para mantener despliegues sin sorpresas.

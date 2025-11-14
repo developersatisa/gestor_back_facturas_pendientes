@@ -36,8 +36,6 @@ class ObtenerFacturasAgrupadasPorCliente:
         """
         Obtiene facturas agrupadas por cliente con resumen de montos
         """
-        logger.info("Iniciando obtención de facturas agrupadas por cliente...")
-        
         try:
             # Obtener sociedades por cliente
             sociedades_map = self._obtener_sociedades_por_cliente()
@@ -55,7 +53,6 @@ class ObtenerFacturasAgrupadasPorCliente:
                 if cliente_info:
                     clientes_con_facturas.append(cliente_info)
             
-            logger.info(f"Procesamiento completado. {len(clientes_con_facturas)} clientes encontrados.")
             return clientes_con_facturas
             
         except Exception as e:

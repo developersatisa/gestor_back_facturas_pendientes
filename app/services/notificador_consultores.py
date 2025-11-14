@@ -73,7 +73,6 @@ class NotificadorConsultores:
                     accion.consultor_id = consultor.entidad.id
         
         if not consultor or not consultor.entidad:
-            logger.info("Accion %s registrada sin consultor asignado; no se envia notificacion", accion.id)
             return False
         
         if not destinatario_email:
@@ -95,17 +94,14 @@ class NotificadorConsultores:
     def _intentar_email(self, destinatarios: Sequence[Optional[str]], subject: str, cuerpo: str) -> bool:
         correos = [d.strip() for d in destinatarios if d and d.strip()]
         if not correos:
-            logger.debug("Notificacion por email omitida: destinatarios vacios")
             return False
 
         host = settings.get_notifier_smtp_host()
         if not host:
-            logger.debug("Notificacion por email omitida: NOTIFIER_SMTP_HOST no definido")
             return False
 
         remitente = settings.get_notifier_smtp_from()
         if not remitente:
-            logger.debug("Notificacion por email omitida: remitente no definido")
             return False
 
         port = settings.get_notifier_smtp_port()
@@ -128,7 +124,6 @@ class NotificadorConsultores:
                 if username:
                     smtp.login(username, password)
                 smtp.send_message(mensaje)
-            logger.info("Notificacion por email enviada a %s", mensaje["To"])
             return True
         except Exception as exc:
             logger.warning("Error enviando email de notificacion: %s", exc)
@@ -225,7 +220,6 @@ class NotificadorConsultores:
         primera = acciones[0]
         consultor = self._resolver_consultor(primera)
         if not consultor or not consultor.entidad:
-            logger.info("Acciones agrupadas sin consultor asignado; no se envia notificacion")
             return False
         
         destinatario_email: Optional[str] = (consultor.entidad.email or "").strip() or None
@@ -243,7 +237,6 @@ class NotificadorConsultores:
                 accion.destinatario = destinatario_email
                 accion.enviada_en = datetime.utcnow()
                 accion.envio_estado = "enviada"
-            logger.info("Notificacion agrupada enviada para %d acciones del seguimiento %s", len(acciones), primera.seguimiento_id)
         else:
             for accion in acciones:
                 accion.envio_estado = "fallo"
@@ -328,7 +321,7 @@ class NotificadorConsultores:
             if datos_cliente:
                 return datos_cliente.get('razsoc') or None
         except Exception as e:
-            logger.debug(f"Error obteniendo nombre del cliente: {e}")
+            pass
         
         return None
 
@@ -341,14 +334,12 @@ class NotificadorConsultores:
             
             tercero = (accion.tercero or "").strip()
             if not tercero:
-                logger.debug(f"No se puede obtener nombre_factura: tercero vacío para acción {accion.id}")
                 return None
             
             tipo_objetivo = (accion.tipo or "").strip()
             asiento_objetivo = str(accion.asiento or "").strip()
             
             if not tipo_objetivo or not asiento_objetivo:
-                logger.debug(f"No se puede obtener nombre_factura: tipo='{tipo_objetivo}' o asiento='{asiento_objetivo}' vacío para acción {accion.id}")
                 return None
             
             # Buscar la factura específica

@@ -39,7 +39,6 @@ def _log_available_odbc_drivers():
     try:
         import pyodbc  # type: ignore
         drivers = pyodbc.drivers()
-        logger.info(f"ODBC drivers disponibles: {drivers}")
     except Exception as e:
         logger.warning(f"No se pudieron listar drivers ODBC: {e}")
 
@@ -164,17 +163,9 @@ def log_pool_status():
     try:
         # Pool de facturas
         facturas_pool = facturas_engine.pool
-        logger.info(f"Pool Facturas - Tamaño: {facturas_pool.size()}, "
-                   f"Checked out: {facturas_pool.checkedout()}, "
-                   f"Overflow: {facturas_pool.overflow()}, "
-                   f"Checked in: {facturas_pool.checkedin()}")
         
         # Pool de clientes
         clientes_pool = clientes_engine.pool
-        logger.info(f"Pool Clientes - Tamaño: {clientes_pool.size()}, "
-                   f"Checked out: {clientes_pool.checkedout()}, "
-                   f"Overflow: {clientes_pool.overflow()}, "
-                   f"Checked in: {clientes_pool.checkedin()}")
     except Exception as e:
         logger.warning(f"Error obteniendo estado del pool: {e}")
 
@@ -184,7 +175,6 @@ def force_pool_cleanup():
     try:
         facturas_engine.pool.recreate()
         clientes_engine.pool.recreate()
-        logger.info("Pools de conexión recreados exitosamente")
     except Exception as e:
         logger.error(f"Error recreando pools: {e}")
 
@@ -214,7 +204,6 @@ def cleanup_stale_connections():
                 AND db IS NOT NULL
             """))
             
-        logger.info("Conexiones colgadas limpiadas exitosamente")
     except Exception as e:
         logger.warning(f"No se pudieron limpiar conexiones colgadas: {e}")
 

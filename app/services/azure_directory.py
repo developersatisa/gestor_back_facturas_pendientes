@@ -207,5 +207,5 @@ class AzureDirectoryClient:
                 encoded = base64.b64encode(resp.content).decode("ascii")
                 return f"data:{content_type};base64,{encoded}"
         except Exception as exc:
-            logger.debug("No se pudo obtener la foto de Graph para %s: %s", user_id, exc)
+            pass
         return None

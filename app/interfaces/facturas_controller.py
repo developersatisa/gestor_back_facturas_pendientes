@@ -58,7 +58,6 @@ def obtener_facturas_cliente(
             for f in facturas
         ]
         
-        logger.info(f"Facturas encontradas para cliente {idcliente}: {len(facturas_con_cliente)}")
         return facturas_con_cliente
     except Exception as e:
         logger.error(f"Error al obtener facturas del cliente {idcliente}: {e}")
@@ -109,7 +108,6 @@ def buscar_factura_por_numero(
 
             respuesta.append(format_factura_search_result(item, datos_cliente))
 
-        logger.info("Busqueda de factura '%s': %s coincidencias", patron, len(respuesta))
         return respuesta
     except Exception as exc:
         logger.error("Error buscando factura '%s': %s", numero, exc)
@@ -137,13 +135,11 @@ def obtener_clientes_con_resumen(
                 fecha_hasta=fecha_hasta,
                 nivel_reclamacion=nivel_reclamacion,
             )
-            print(clientes_con_facturas)
         except Exception as inner_err:
             # No tumbar el endpoint: devolver lista vacía y loguear el detalle
             logger.error(f"Error en use_case clientes-con-resumen: {inner_err}")
             clientes_con_facturas = []
         
-        logger.info(f"Clientes con resumen encontrados: {len(clientes_con_facturas)}")
         return clientes_con_facturas
     except Exception as e:
         logger.error(f"Error al obtener clientes con resumen: {e}")
@@ -158,7 +154,6 @@ def obtener_estadisticas(
     try:
         use_case = ObtenerEstadisticasFacturas(repo_facturas, repo_clientes)
         estadisticas = use_case.execute()
-        logger.info(f"Estadísticas calculadas: {estadisticas}")
         return estadisticas
     except Exception as e:
         logger.error(f"Error al obtener estadísticas: {e}")
@@ -663,21 +658,18 @@ def listar_historial_pagadas(
     consultando la tabla real de facturas. Si `tercero` se proporciona, se filtra por él.
     """
     try:
-        logger.info(f"🔍 Listando historial pagadas - tercero: {tercero}, limit: {limit}")
         from sqlalchemy import text as sqltext
         
         # Verificar si la tabla existe primero
         try:
             check_table_sql = "SELECT COUNT(*) as count FROM ATISAINT.facturas_cambio_pago"
             result = repo_facturas.db.execute(sqltext(check_table_sql)).first()
-            logger.info(f"🔍 Tabla facturas_cambio_pago tiene {result[0] if result else 0} registros")
         except Exception as e:
-            logger.error(f"❌ Error verificando tabla facturas_cambio_pago: {e}")
+            logger.error(f"Error verificando tabla facturas_cambio_pago: {e}")
             return []
         
         # Si no hay datos, devolver array vacío
         if not result or result[0] == 0:
-            logger.info("📊 No hay datos en la tabla facturas_cambio_pago")
             return []
         
         # Construir SQL según dialecto
@@ -706,10 +698,7 @@ def listar_historial_pagadas(
         tail_sql = "" if dialect == 'mssql' else f" LIMIT {int(limit)}"
 
         q = sqltext(base_sql + where_sql + order_sql + tail_sql)
-        logger.info(f"🔍 SQL ejecutado: {base_sql + where_sql + order_sql + tail_sql}")
-        logger.info(f"🔍 Parámetros: {params}")
         rows = repo_facturas.db.execute(q, params).mappings().all()
-        logger.info(f"📊 Filas encontradas: {len(rows)}")
 
         def _norm(v: Optional[str]) -> Optional[str]:
             if v is None:
@@ -860,7 +849,6 @@ def listar_historial_pagadas(
                 "pagos": datos['pagos']
             })
 
-        logger.info(f"📊 Resultado final: {len(out)} facturas pagadas")
         return out
     except Exception as e:
         logger.error(f"Error al listar historial pagadas: {e}")

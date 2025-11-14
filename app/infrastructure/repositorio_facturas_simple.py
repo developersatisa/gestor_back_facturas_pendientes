@@ -429,7 +429,6 @@ class RepositorioClientes:
         if row:
             return self._procesar_resultado_cliente(row, codigo_tercero)
         
-        logger.debug(f"No se encontró cliente para código '{codigo_tercero}'")
         return None
 
     def _buscar_cliente_exacto(
@@ -537,6 +536,5 @@ class RepositorioClientes:
             'cif_factura': _clean(getattr(row, "cif_factura", None)),
         }
         
-        logger.debug(f"Cliente encontrado para código '{codigo_tercero}': {cliente_data.get('razsoc', 'Sin nombre')}")
         return cliente_data
  

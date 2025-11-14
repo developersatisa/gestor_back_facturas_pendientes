@@ -385,7 +385,6 @@ def crear_acciones_de_seguimiento(seguimiento_id: int, payload: AccionMasivaIn, 
         
         # Si hay acciones placeholder, actualizarlas TODAS con la acción común
         elif acciones_placeholder:
-            logger.info(f"Actualizando {len(acciones_placeholder)} acciones placeholder con acción común")
             # Resolver el destinatario una vez para todas las acciones placeholder
             destinatario_placeholder = resolver_destinatario(payload.consultor_id, payload.idcliente, payload.tercero)
             # Actualizar TODAS las acciones placeholder del seguimiento con la acción común
