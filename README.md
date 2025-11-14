@@ -122,7 +122,7 @@ Todos los controladores usan repositorios en `app/infrastructure` (SQLAlchemy) y
   python scripts/enviar_acciones_pendientes.py --dry-run
   ```
 
-- Services esperados en produccion: `facturas-backend.service` (API) y `facturas-frontend.service`. El script anterior se agenda desde `crontab` apuntando al mismo entorno virtual.
+- Services esperados en produccion: `impagos-backend.service` (API, reemplaza al antiguo `facturas-backend`) y `impagos-frontend.service`. El script anterior se agenda desde `crontab` apuntando al mismo entorno virtual.
 
 ## Testing
 
@@ -137,7 +137,7 @@ Flujo basico (resumen, revisa `GUIA_DESPLIEGUE.md` para el detalle):
 1. En local: `python -m py_compile` sobre los controladores listados y `npm run build` en el frontend.
 2. `git add . && git commit && git push origin master` (backend y frontend por separado).
 3. En IASERVER: `git pull origin master` dentro de `/home/produccion/facturas_impagadas/facturas_backend`.
-4. Reinicia el servicio: `sudo systemctl restart facturas-backend.service` y verifica `sudo systemctl status ...`.
+4. Reinicia el servicio: `sudo systemctl restart impagos-backend.service` y verifica `sudo systemctl status impagos-backend.service`.
 5. Comprueba `/health`, `/auth/debug` y el login real. Si cambiaste nginx, ejecuta `sudo nginx -t` y `sudo systemctl reload nginx`.
 
 ## Soporte rapido
