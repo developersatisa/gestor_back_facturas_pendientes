@@ -31,8 +31,11 @@ class NotificadorConsultores:
 
     def __init__(self, db_session: Session, repo_facturas=None, repo_clientes=None):
         self.db = db_session
+        # Repositorios base (pueden venir inyectados para tests); si no, se crean bajo demanda.
         self.repo_facturas = repo_facturas
         self.repo_clientes = repo_clientes
+        self._facturas_db_session = None
+        self._clientes_db_session = None
 
     def notificar_accion(self, accion: AccionFactura) -> bool:
         """
@@ -206,7 +209,8 @@ class NotificadorConsultores:
             "Sistema de Gestion de Facturas Pendientes",
         ])
 
-        return subject, "\n".join(cuerpo)
+        # Usar CRLF para asegurar saltos de línea consistentes en clientes de correo.
+        return subject, "\r\n".join(cuerpo)
 
     def notificar_acciones_agrupadas(self, acciones: Sequence[AccionFactura]) -> bool:
         """
@@ -257,6 +261,9 @@ class NotificadorConsultores:
         aviso = self._formatear_datetime(primera.aviso)
         creado = self._formatear_datetime(primera.creado_en)
 
+        # Intentar resolver los nombres de factura una vez para todas las acciones
+        self._anotar_nombres_factura(acciones)
+
         subject = f"[Gestion Facturas] Acciones agrupadas ({canal}) - Cliente {primera.tercero or cliente_id} - {len(acciones)} facturas"
 
         # Obtener nombre del cliente
@@ -277,16 +284,24 @@ class NotificadorConsultores:
             "═══════════════════════════════════════════════════════════",
             "📋 INFORMACIÓN GENERAL DEL SEGUIMIENTO",
             "═══════════════════════════════════════════════════════════",
+        ]
+
+        info_lines = [
             f"Tipo de acción (canal): {canal.lower()}",
             f"Cliente: {texto_cliente or 'Desconocido'}",
             f"Descripción común: {primera.descripcion or 'Sin descripción'}",
             f"Fecha de aviso: {aviso}",
             f"Registrado por: {primera.usuario or 'Sistema'} el {creado}",
-            "",
+        ]
+        for linea in info_lines:
+            cuerpo.append(linea)
+            cuerpo.append("")  # línea en blanco para forzar salto incluso en clientes que reflow
+
+        cuerpo.extend([
             "═══════════════════════════════════════════════════════════",
             f"📄 FACTURAS INCLUIDAS ({len(acciones)} facturas)",
             "═══════════════════════════════════════════════════════════",
-        ]
+        ])
 
         # Listar todas las facturas de forma clara
         for idx, accion in enumerate(acciones, 1):
@@ -306,18 +321,19 @@ class NotificadorConsultores:
             "Sistema de Gestion de Facturas Pendientes",
         ])
 
-        return subject, "\n".join(cuerpo)
+        # Usar CRLF para asegurar saltos de línea consistentes en clientes de correo.
+        return subject, "\r\n".join(cuerpo)
 
     def _obtener_nombre_cliente(self, accion: AccionFactura) -> Optional[str]:
         """Obtiene el nombre del cliente desde la base de datos"""
         try:
-            # Crear repositorio si no existe
-            if not self.repo_clientes:
-                self.repo_clientes = RepositorioClientes(self.db)
-            
+            repo_clientes = self._get_repo_clientes()
+            if not repo_clientes:
+                return None
+
             # Intentar obtener el cliente usando tercero sin ceros (formato en BD)
             tercero_sin_ceros = str(int(accion.tercero)) if accion.tercero and accion.tercero.isdigit() else accion.tercero
-            datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
+            datos_cliente = repo_clientes.obtener_cliente(tercero_sin_ceros)
             if datos_cliente:
                 return datos_cliente.get('razsoc') or None
         except Exception as e:
@@ -326,11 +342,20 @@ class NotificadorConsultores:
         return None
 
     def _obtener_nombre_factura(self, accion: AccionFactura) -> Optional[str]:
-        """Obtiene el nombre de factura (ID de factura completo como AC0025007959) desde la base de datos"""
+        """Obtiene el nombre de factura (ID de factura completo como AC0025007959) desde la base de datos."""
+        # 1) Usar cualquier dato ya resuelto previamente (p.ej. al filtrar pendientes)
         try:
-            # Crear repositorio si no existe
-            if not self.repo_facturas:
-                self.repo_facturas = RepositorioFacturas(self.db)
+            nombre_cache = getattr(accion, "_nombre_factura_resuelta", None) or getattr(accion, "nombre_factura", None)
+            if nombre_cache:
+                return str(nombre_cache).strip()
+        except Exception:
+            pass
+
+        # 2) Consultar en X3 usando el repositorio de facturas real
+        try:
+            repo_facturas = self._get_repo_facturas()
+            if not repo_facturas:
+                return None
             
             tercero = (accion.tercero or "").strip()
             if not tercero:
@@ -342,22 +367,20 @@ class NotificadorConsultores:
             if not tipo_objetivo or not asiento_objetivo:
                 return None
             
-            # Buscar la factura específica
-            factura_detalle = self.repo_facturas.obtener_factura_especifica(
+            factura_detalle = repo_facturas.obtener_factura_especifica(
                 tercero=tercero,
                 tipo=tipo_objetivo,
                 asiento=asiento_objetivo,
             )
             
             if factura_detalle:
-                # El campo nombre_factura viene de NUM_0 en la BD (ej: "AC0025007959")
                 nombre_factura = factura_detalle.get("nombre_factura")
                 if nombre_factura:
                     return str(nombre_factura).strip()
             
-            # Intentar búsqueda alternativa: buscar en todas las facturas del cliente
+            # Intentar busqueda alternativa: buscar en todas las facturas del cliente
             try:
-                facturas_cliente = self.repo_facturas.obtener_facturas(tercero=tercero)
+                facturas_cliente = repo_facturas.obtener_facturas(tercero=tercero)
                 for factura in facturas_cliente:
                     if (str(factura.get("tipo", "")).strip() == tipo_objetivo and 
                         str(factura.get("asiento", "")).strip() == asiento_objetivo):
@@ -366,11 +389,97 @@ class NotificadorConsultores:
                             return str(nombre_alt).strip()
             except Exception:
                 pass
-                    
         except Exception:
             pass
         
         return None
+
+    def _get_repo_facturas(self) -> Optional[RepositorioFacturas]:
+        """Obtiene un repositorio de facturas usando la base de datos real de X3."""
+        try:
+            if self.repo_facturas:
+                return self.repo_facturas
+            from app.config.database import FacturasSessionLocal
+            self._facturas_db_session = FacturasSessionLocal()
+            self.repo_facturas = RepositorioFacturas(self._facturas_db_session)
+            return self.repo_facturas
+        except Exception:
+            return None
+
+    def _get_repo_clientes(self) -> Optional[RepositorioClientes]:
+        """Obtiene un repositorio de clientes usando la base de datos de clientes."""
+        try:
+            if self.repo_clientes:
+                return self.repo_clientes
+            from app.config.database import ClientesSessionLocal
+            self._clientes_db_session = ClientesSessionLocal()
+            self.repo_clientes = RepositorioClientes(self._clientes_db_session)
+            return self.repo_clientes
+        except Exception:
+            return None
+
+    def __del__(self):
+        """Cierra las sesiones auxiliares creadas bajo demanda."""
+        for ses in (self._facturas_db_session, self._clientes_db_session):
+            try:
+                if ses:
+                    ses.close()
+            except Exception:
+                pass
+
+    def _anotar_nombres_factura(self, acciones: Sequence[AccionFactura]) -> None:
+        """
+        Intenta resolver y cachear el nombre de factura para todas las acciones usando una sola consulta al
+        repositorio (cuando es posible).
+        """
+        if not acciones:
+            return
+
+        repo_facturas = self._get_repo_facturas()
+        if not repo_facturas:
+            return
+
+        tercero = (acciones[0].tercero or "").strip()
+        facturas_cliente = None
+        try:
+            facturas_cliente = repo_facturas.obtener_facturas(tercero=tercero)
+        except Exception:
+            facturas_cliente = None
+
+        for accion in acciones:
+            if getattr(accion, "_nombre_factura_resuelta", None) or getattr(accion, "nombre_factura", None):
+                continue
+
+            tipo_obj = (accion.tipo or "").strip()
+            asiento_obj = str(accion.asiento or "").strip()
+            nombre_encontrado = None
+
+            if facturas_cliente:
+                for factura in facturas_cliente:
+                    if (str(factura.get("tipo", "")).strip() == tipo_obj and
+                        str(factura.get("asiento", "")).strip() == asiento_obj):
+                        nombre_alt = factura.get("nombre_factura")
+                        if nombre_alt:
+                            nombre_encontrado = str(nombre_alt).strip()
+                        break
+
+            if not nombre_encontrado:
+                try:
+                    detalle = repo_facturas.obtener_factura_especifica(
+                        tercero=tercero,
+                        tipo=tipo_obj,
+                        asiento=asiento_obj,
+                    )
+                    if detalle and detalle.get("nombre_factura"):
+                        nombre_encontrado = str(detalle.get("nombre_factura")).strip()
+                except Exception:
+                    pass
+
+            if nombre_encontrado:
+                try:
+                    setattr(accion, "_nombre_factura_resuelta", nombre_encontrado)
+                except Exception:
+                    pass
 
     @staticmethod
     def _formatear_datetime(valor: Optional[datetime]) -> str:
