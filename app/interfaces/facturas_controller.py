@@ -246,7 +246,18 @@ def descargar_excel_empresas_por_sociedad(
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Error detectando motor de BD")
         
         # Consulta SQL para validar totales por sociedad (igual que dashboard)
-        query_totales_sociedades = """
+        # Ajustar según el filtro: para 'empresa_debe_cliente' necesitamos valores negativos
+        if filtro == 'empresa_debe_cliente':
+            # Para reintegro pendiente, solo valores negativos
+            having_clause = "HAVING SUM(CASE WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0) WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0)) ELSE 0 END) < 0"
+        elif filtro == 'cliente_debe_empresa':
+            # Para cobro pendiente, solo valores positivos
+            having_clause = "HAVING SUM(CASE WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0) WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0)) ELSE 0 END) > 0"
+        else:  # filtro == 'all'
+            # Para todos, cualquier valor distinto de cero
+            having_clause = "HAVING SUM(CASE WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0) WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0)) ELSE 0 END) <> 0"
+        
+        query_totales_sociedades = f"""
         WITH base AS (
           SELECT CPY_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
           FROM x3v12.ATISAINT.GACCDUDATE
@@ -263,15 +274,44 @@ def descargar_excel_empresas_por_sociedad(
         FROM base
         WHERE CPY_0 IN ('S005','S001','S010')
         GROUP BY CPY_0
-        HAVING SUM(CASE
-                      WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
-                      WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
-                      ELSE 0
-                    END) > 0
+        {having_clause}
         ORDER BY CPY_0;
         """
         
+        # Primero obtener las empresas que cumplen el filtro (igual que el dashboard)
+        # IMPORTANTE: Debe incluir el filtro de sociedades igual que query_totales del dashboard
+        # Esto asegura que las empresas en el Excel coincidan con las del dashboard
+        query_empresas_filtradas = """
+        WITH base AS (
+          SELECT BPR_0, AMTCUR_0, PAYCUR_0, SNS_0, FLGCLE_0, DUDDAT_0, TYP_0
+          FROM x3v12.ATISAINT.GACCDUDATE
+          WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
+            AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+            AND CPY_0 IN ('S005','S001','S010')
+        ),
+        empresas_agg AS (
+          SELECT
+            BPR_0 as tercero_original,
+            SUM(CASE
+                  WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                  WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                  ELSE 0
+                END) as monto_total
+          FROM base
+          GROUP BY BPR_0
+          HAVING SUM(CASE
+                        WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                        WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                        ELSE 0
+                      END) <> 0
+        )
+        SELECT tercero_original, monto_total
+        FROM empresas_agg
+        ORDER BY ABS(monto_total) DESC;
+        """
+        
         # Consulta SQL para obtener facturas individuales por empresa y sociedad
+        # Solo para las empresas que cumplen el filtro y que están en las sociedades deseadas
         query_facturas = """
         SELECT 
           BPR_0 as tercero,
@@ -304,6 +344,30 @@ def descargar_excel_empresas_por_sociedad(
         for row in result_totales:
             totales_validacion[row.sociedad] = float(row.monto_total)
         
+        # Primero obtener las empresas que cumplen el filtro (igual que el dashboard)
+        result_empresas_filtradas = repo_facturas.db.execute(text(query_empresas_filtradas))
+        empresas_filtradas = {}  # {tercero_original_raw: monto_total}
+        terceros_originales_set = set()  # Set de terceros originales (sin formatear) para comparación rápida
+        
+        for row in result_empresas_filtradas:
+            raw_tercero = getattr(row, 'tercero_original', None)
+            tercero_original_str = str(raw_tercero).strip() if raw_tercero else ''
+            monto_total = float(row.monto_total) if row.monto_total else 0.0
+            
+            # Aplicar filtro según el parámetro (igual que el dashboard)
+            if filtro == 'cliente_debe_empresa':
+                if monto_total > 0:
+                    empresas_filtradas[tercero_original_str] = monto_total
+                    terceros_originales_set.add(tercero_original_str)
+            elif filtro == 'empresa_debe_cliente':
+                if monto_total < 0:
+                    empresas_filtradas[tercero_original_str] = monto_total
+                    terceros_originales_set.add(tercero_original_str)
+            else:  # filtro == 'all'
+                if monto_total != 0:
+                    empresas_filtradas[tercero_original_str] = monto_total
+                    terceros_originales_set.add(tercero_original_str)
+        
         # Ejecutar consulta de facturas individuales
         result = repo_facturas.db.execute(text(query_facturas))
         facturas_data = result.fetchall()
@@ -318,7 +382,39 @@ def descargar_excel_empresas_por_sociedad(
         for row in facturas_data:
             sociedad = row.sociedad
             raw_tercero = getattr(row, 'tercero', None)
-            tercero = formatear_tercero_para_facturas(raw_tercero) or (str(raw_tercero).strip() if raw_tercero else '')
+            tercero_raw_str = str(raw_tercero).strip() if raw_tercero else ''
+            
+            # Verificar si esta empresa está en la lista filtrada
+            # Comparar el tercero original directamente
+            tercero_en_filtro = False
+            if tercero_raw_str in terceros_originales_set:
+                tercero_en_filtro = True
+            else:
+                # Intentar comparar normalizando (sin ceros a la izquierda)
+                try:
+                    tercero_normalizado = str(int(tercero_raw_str))
+                    # Buscar en el set de terceros originales
+                    for tercero_orig in terceros_originales_set:
+                        try:
+                            if str(int(tercero_orig)) == tercero_normalizado:
+                                tercero_en_filtro = True
+                                break
+                        except:
+                            if tercero_orig == tercero_raw_str:
+                                tercero_en_filtro = True
+                                break
+                except:
+                    # Si no se puede convertir a int, comparar directamente
+                    if tercero_raw_str in terceros_originales_set:
+                        tercero_en_filtro = True
+            
+            # Solo procesar si la empresa está en el filtro
+            if not tercero_en_filtro:
+                continue
+            
+            # Formatear el tercero para mostrar (usar el formateado del diccionario si existe)
+            tercero = formatear_tercero_para_facturas(raw_tercero) or tercero_raw_str
+            
             tipo = str(row.tipo) if row.tipo else ''
             asiento = str(row.asiento) if row.asiento else ''
             nombre_factura = str(row.nombre_factura) if row.nombre_factura else f'{tipo}-{asiento}'
@@ -532,25 +628,28 @@ def descargar_excel_empresas_por_sociedad(
         row = max_row
         
         # Fila de totales (todas las sociedades en la misma fila)
-        # Usar los totales validados del query del dashboard para asegurar que coincidan
-        # NOTA: Las empresas se cuentan por sociedad en cada columna, pero el total general
-        # debe mostrar empresas únicas (una empresa puede aparecer en múltiples sociedades)
+        # IMPORTANTE: El total general debe calcularse igual que el dashboard (sumando por empresa, no por sociedad)
+        # porque una empresa puede tener facturas en múltiples sociedades
         total_empresas_unicas = set()
-        total_general = 0.0
+        total_empresas_repetidas = 0  # Total de empresas contando repeticiones
+        
+        # Calcular total general usando las empresas filtradas (igual que el dashboard)
+        # Esto asegura que el total coincida exactamente con el dashboard
+        total_general = sum(empresas_filtradas.values())
         
         for sociedad_codigo in sociedades_orden:
             col_base = col_inicio[sociedad_codigo]
             nombre_sociedad = SOCIEDADES_NAMES.get(sociedad_codigo, sociedad_codigo)
             empresas = datos_sociedades.get(sociedad_codigo, [])
             
-            # Usar el total validado del dashboard si está disponible, sino calcular
-            total_sociedad = totales_validacion.get(sociedad_codigo, sum(e['total'] for e in empresas))
-            total_general += total_sociedad
+            # Calcular total por sociedad (solo para mostrar en cada columna)
+            total_sociedad = sum(e['total'] for e in empresas)
             
-            # Contar empresas únicas (para el total general)
+            # Contar empresas únicas y total (con repeticiones)
             for e in empresas:
                 tercero_key = str(e['tercero']).strip()
                 total_empresas_unicas.add(tercero_key)
+                total_empresas_repetidas += 1  # Contar todas las empresas, incluyendo repetidas
             
             ws[f'{col_base}{row}'] = 'TOTAL'
             ws[f'{chr(ord(col_base) + 1)}{row}'] = f'{len(empresas)} empresas'
@@ -569,13 +668,12 @@ def descargar_excel_empresas_por_sociedad(
                     cell.alignment = center_alignment
         
         # Fila de total general (suma de las tres sociedades)
-        # NOTA: El total de empresas debe ser empresas únicas (no la suma por sociedad)
-        # porque una empresa puede aparecer en múltiples sociedades
+        # Mostrar tanto empresas únicas como total (con repeticiones)
         row += 1
         total_general_fill = PatternFill(start_color="006341", end_color="006341", fill_type="solid")
         total_general_font = Font(bold=True, size=14, color="FFFFFF")
         
-        # Calcular total de empresas únicas (igual que el dashboard)
+        # Calcular total de empresas únicas y total (con repeticiones)
         total_empresas_unicas_count = len(total_empresas_unicas)
         
         ws.merge_cells(f'A{row}:C{row}')
@@ -585,7 +683,7 @@ def descargar_excel_empresas_por_sociedad(
         ws[f'A{row}'].alignment = center_alignment
         
         ws.merge_cells(f'E{row}:G{row}')
-        ws[f'E{row}'] = f'{total_empresas_unicas_count} empresas (únicas)'
+        ws[f'E{row}'] = f'{total_empresas_unicas_count} empresas únicas / {total_empresas_repetidas} total'
         ws[f'E{row}'].font = total_general_font
         ws[f'E{row}'].fill = total_general_fill
         ws[f'E{row}'].alignment = center_alignment

@@ -27,7 +27,7 @@ Servicio FastAPI que expone la API corporativa de facturas pendientes de ATISA. 
 - API de consultores: alta/baja logica, asignaciones, proximos avisos y resumen de cartera.
 - Registro de acciones: crear, editar, eliminar y listar acciones comerciales y cambios de estado.
 - Seguimientos simples y seguimientos por lotes (cabecera + detalle de facturas involucradas).
-- Exportador Excel agrupado por sociedad para reportes ejecutivos.
+- Exportador Excel agrupado por sociedad para reportes ejecutivos con filtros (cobro pendiente, reintegro pendiente, total). Los totales y empresas coinciden exactamente con el dashboard.
 - Autenticacion Azure AD con callback `/auth/callback`, bridge `/auth/return` y diagnostico `/auth/debug`.
 - Servicios auxiliares: envio programado de correos/Teams y healthcheck (`/health`).
 
@@ -100,9 +100,20 @@ Guarda estos valores en un `.env` y FastAPI los cargara via `dotenv`.
 
 ## Routers y endpoints
 
+### Endpoint de Excel de estadísticas
+
+`GET /api/estadisticas/excel?filtro={all|cliente_debe_empresa|empresa_debe_cliente}`
+
+Genera un Excel con empresas agrupadas por sociedad (S005, S010, S001). Características:
+- **Filtros**: `all` (todas), `cliente_debe_empresa` (cobro pendiente, saldo positivo), `empresa_debe_cliente` (reintegro pendiente, saldo negativo)
+- **Sincronización con dashboard**: Usa la misma consulta base que `/api/estadisticas` para garantizar que las empresas y totales coincidan exactamente
+- **Cálculo de totales**: Suma por empresa (no por sociedad) para evitar duplicados cuando una empresa aparece en múltiples sociedades
+- **Contadores**: Muestra empresas únicas y total (con repeticiones por sociedad)
+- **Solo SQL Server**: Requiere conexión MSSQL; devuelve 503 si se usa SQLite
+
 | Archivo | Prefijo | Highlights |
 | --- | --- | --- |
-| `app/interfaces/facturas_controller.py` | `/api` | Facturas por cliente, busqueda por numero, resumenes por cliente/sociedad, estadisticas, Excel, historial de pagos, acciones, cambios |
+| `app/interfaces/facturas_controller.py` | `/api` | Facturas por cliente, busqueda por numero, resumenes por cliente/sociedad, estadisticas, Excel con filtros (cobro/reintegro pendiente), historial de pagos, acciones, cambios |
 | `app/interfaces/historial_controller.py` | `/api` | CRUD liviano de historial de facturas locales |
 | `app/interfaces/consultores_controller.py` | `/api` | CRUD de consultores, asignaciones, proximos avisos, exportaciones |
 | `app/interfaces/registro_facturas_controller.py` | `/api` | Registro estructurado de cambios y comentarios |
@@ -146,6 +157,7 @@ Flujo basico (resumen, revisa `GUIA_DESPLIEGUE.md` para el detalle):
 - **Error IM002**: el servidor no encuentra el driver ODBC. Corre `log_odbc_env_diagnostics()` para listar drivers instalados.
 - **Consultores no se crean**: borra `gestion_facturas.db` local o confirma permisos sobre la BD configurada en `GESTION_DATABASE_URL`.
 - **Excel de sociedades devuelve 503**: solo funciona con SQL Server; con SQLite se bloquea para evitar datos inconsistentes.
+- **Excel no coincide con dashboard**: el Excel usa la misma logica de filtrado que el dashboard. Los totales se calculan sumando por empresa (no por sociedad) para evitar duplicados. El parametro `filtro` acepta: `all`, `cliente_debe_empresa` (cobro pendiente), `empresa_debe_cliente` (reintegro pendiente).
 - **Acciones automaticas**: si el cron no envia correos, revisa `/var/log/facturas_acciones.log` en el servidor y los `NOTIFIER_SMTP_*` definidos.
 
 Documenta cualquier cambio relevante tambien en `GUIA_DESPLIEGUE.md` para mantener despliegues sin sorpresas.

@@ -162,6 +162,49 @@ GET /api/estadisticas
 - `SAC_0 = '4300'`
 - `FLGCLE_0 = 1`
 
+### 5. Descargar Excel de Empresas por Sociedad
+```
+GET /api/estadisticas/excel
+```
+
+**Descripción:** Genera un archivo Excel con empresas y sus facturas agrupadas por sociedad (S005, S010, S001). Los datos coinciden exactamente con el dashboard.
+
+**Parámetros de consulta:**
+- `filtro` (string, opcional) - Filtro de saldo. Valores posibles:
+  - `all` (por defecto): Todas las empresas con saldo (positivo o negativo)
+  - `cliente_debe_empresa`: Solo empresas con saldo positivo (cobro pendiente)
+  - `empresa_debe_cliente`: Solo empresas con saldo negativo (reintegro pendiente)
+
+**Ejemplo de uso:**
+```
+GET /api/estadisticas/excel
+GET /api/estadisticas/excel?filtro=cliente_debe_empresa
+GET /api/estadisticas/excel?filtro=empresa_debe_cliente
+```
+
+**Respuesta:**
+- Content-Type: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- Content-Disposition: `attachment; filename=informe_empresas_por_sociedad_YYYYMMDD_HHMMSS.xlsx`
+- Archivo Excel con estructura:
+  - Encabezado: Título según filtro, fecha de generación
+  - Tres columnas por sociedad (Grupo Atisa, Selier, Asesores Titulados)
+  - Para cada empresa: ID, nombre, facturas individuales con montos
+  - Totales por sociedad
+  - Total general con empresas únicas y total (con repeticiones)
+
+**Características:**
+- **Sincronización con dashboard**: Usa la misma consulta base que `/api/estadisticas` para garantizar coincidencia exacta
+- **Cálculo de totales**: Suma por empresa (no por sociedad) para evitar duplicados cuando una empresa aparece en múltiples sociedades
+- **Filtros**: Aplica el mismo filtro que el dashboard según el parámetro recibido
+- **Solo SQL Server**: Requiere conexión MSSQL; devuelve 503 si se usa SQLite
+
+**Filtros aplicados (base):**
+- `SAC_0 IN ('4300','4302')`
+- `TYP_0 NOT IN ('AA','ZZ')`
+- `DUDDAT_0 < GETDATE()` (facturas vencidas)
+- `FLGCLE_0 <> 2`
+- `CPY_0 IN ('S005','S001','S010')` (solo estas sociedades)
+
 ## Documentación Automática
 ```
 http://127.0.0.1:8000/docs
