@@ -132,6 +132,7 @@ class RepositorioRegistroFacturas:
         aviso: Optional[str] = None,
         usuario: Optional[str] = None,
         consultor_id: Optional[int] = None,
+        destinatario: Optional[str] = None,
     ) -> Dict[str, Any]:
         def _parse_dt(val: Optional[str]) -> Optional[datetime]:
             if not val:

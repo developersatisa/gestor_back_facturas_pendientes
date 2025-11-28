@@ -55,6 +55,7 @@ class AccionFacturaIn(BaseModel):
     aviso: Optional[str] = None
     usuario: Optional[str] = None
     consultor_id: Optional[int] = None
+    destinatario: Optional[str] = None
 
 
 class AccionFacturaOut(BaseModel):
@@ -101,8 +102,11 @@ def listar_cambios(idcliente: Optional[int] = None, tercero: Optional[str] = Non
 def registrar_accion(payload: AccionFacturaIn, repo: RepositorioRegistroFacturas = Depends(get_repo)):
     try:
         return repo.registrar_accion(**payload.model_dump())
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error registrando acción de factura")
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error registrando acción de factura: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error registrando acción de factura: {str(e)}")
 
 
 @router.get("/facturas/acciones", response_model=List[AccionFacturaOut])
