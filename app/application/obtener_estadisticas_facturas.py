@@ -1,6 +1,10 @@
 from typing import Dict, Any, List
 from datetime import date
+import logging
 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
+from app.infrastructure.tercero_helpers import formatear_tercero_para_facturas
+
+logger = logging.getLogger(__name__)
 
 class ObtenerEstadisticasFacturas:
     def __init__(self, repo_facturas: RepositorioFacturas, repo_clientes: RepositorioClientes):
@@ -26,6 +30,11 @@ class ObtenerEstadisticasFacturas:
                     "empresas_con_montos": [],
                     "sociedades_con_montos": [],
                     "facturas_mas_vencidas": [],
+                    "saldo_resumen": {
+                        "all": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                        "cliente_debe_empresa": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                        "empresa_debe_cliente": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                    },
                     "filtros_aplicados": {
                         "tipo_excluido": ["AA", "ZZ"],
                         "colectivo": ["4300", "4302"],
@@ -42,6 +51,11 @@ class ObtenerEstadisticasFacturas:
                 "empresas_con_montos": [],
                 "sociedades_con_montos": [],
                 "facturas_mas_vencidas": [],
+                "saldo_resumen": {
+                    "all": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                    "cliente_debe_empresa": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                    "empresa_debe_cliente": {"total_empresas": 0, "total_facturas": 0, "total_monto": 0.0},
+                },
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
                     "colectivo": ["4300", "4302"],
@@ -74,9 +88,14 @@ class ObtenerEstadisticasFacturas:
           GROUP BY BPR_0
         )
         SELECT
-          (SELECT COUNT(1) FROM agg WHERE monto_neto > 0) AS total_empresas_pendientes,
-          (SELECT COALESCE(SUM(total_facturas),0) FROM agg) AS total_facturas_pendientes,
-          (SELECT COALESCE(SUM(monto_neto),0) FROM agg) AS monto_total_adeudado;
+          (SELECT COUNT(1) FROM agg WHERE monto_neto <> 0) AS total_empresas_total,
+          (SELECT COUNT(1) FROM agg WHERE monto_neto > 0) AS total_empresas_cliente_debe,
+          (SELECT COUNT(1) FROM agg WHERE monto_neto < 0) AS total_empresas_empresa_debe,
+          (SELECT COALESCE(SUM(total_facturas),0) FROM agg) AS total_facturas_total,
+          (SELECT COALESCE(SUM(total_facturas),0) FROM agg WHERE monto_neto > 0) AS total_facturas_cliente_debe,
+          (SELECT COALESCE(SUM(total_facturas),0) FROM agg WHERE monto_neto < 0) AS total_facturas_empresa_debe,
+          (SELECT COALESCE(SUM(monto_neto),0) FROM agg WHERE monto_neto > 0) AS monto_total_cliente_debe,
+          (SELECT COALESCE(SUM(ABS(monto_neto)),0) FROM agg WHERE monto_neto < 0) AS monto_total_empresa_debe;
         """
 
         # Empresas TOP 50 por monto neto
@@ -86,22 +105,28 @@ class ObtenerEstadisticasFacturas:
           FROM x3v12.ATISAINT.GACCDUDATE
           WHERE SAC_0 IN ('4300','4302') AND TYP_0 NOT IN ('AA','ZZ')
             AND DUDDAT_0 < GETDATE() AND FLGCLE_0 <> 2
+        ),
+        empresas_agg AS (
+          SELECT
+            BPR_0 as tercero_original,
+            SUM(CASE
+                  WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                  WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                  ELSE 0
+                END) as monto_total
+          FROM base
+          GROUP BY BPR_0
+          HAVING SUM(CASE
+                        WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
+                        WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
+                        ELSE 0
+                      END) <> 0
         )
         SELECT TOP 50
-          BPR_0 as tercero_original,
-          SUM(CASE
-                WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
-                WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
-                ELSE 0
-              END) as monto_total
-        FROM base
-        GROUP BY BPR_0
-        HAVING SUM(CASE
-                      WHEN (SNS_0=-1 OR FLGCLE_0=-1 OR AMTCUR_0<0) THEN -ABS(AMTCUR_0)
-                      WHEN (FLGCLE_0=1) AND (SNS_0<>-1) AND (AMTCUR_0-ISNULL(PAYCUR_0,0))>0 THEN (AMTCUR_0-ISNULL(PAYCUR_0,0))
-                      ELSE 0
-                    END) > 0
-        ORDER BY monto_total DESC;
+          tercero_original,
+          monto_total
+        FROM empresas_agg
+        ORDER BY ABS(monto_total) DESC;
         """
 
         # Sociedades TOP por monto neto (CPY_0)
@@ -153,16 +178,40 @@ class ObtenerEstadisticasFacturas:
         
         try:
             res_tot = self.repo_facturas.db.execute(text(query_totales)).fetchone()
-            total_empresas = int(res_tot.total_empresas_pendientes or 0)
-            total_facturas = int(res_tot.total_facturas_pendientes or 0)
-            monto_total = float(res_tot.monto_total_adeudado or 0.0)
+            total_empresas = int(res_tot.total_empresas_total or 0)
+            total_empresas_cliente = int(res_tot.total_empresas_cliente_debe or 0)
+            total_empresas_empresa = int(res_tot.total_empresas_empresa_debe or 0)
+            total_facturas = int(res_tot.total_facturas_total or 0)
+            total_facturas_cliente = int(res_tot.total_facturas_cliente_debe or 0)
+            total_facturas_empresa = int(res_tot.total_facturas_empresa_debe or 0)
+            monto_cliente = float(res_tot.monto_total_cliente_debe or 0.0)
+            monto_empresa = float(res_tot.monto_total_empresa_debe or 0.0)
+            monto_total = float(monto_cliente + monto_empresa)
+            saldo_resumen = {
+                "all": {
+                    "total_empresas": total_empresas,
+                    "total_facturas": total_facturas,
+                    "total_monto": monto_total,
+                },
+                "cliente_debe_empresa": {
+                    "total_empresas": total_empresas_cliente,
+                    "total_facturas": total_facturas_cliente,
+                    "total_monto": monto_cliente,
+                },
+                "empresa_debe_cliente": {
+                    "total_empresas": total_empresas_empresa,
+                    "total_facturas": total_facturas_empresa,
+                    "total_monto": monto_empresa,
+                },
+            }
             
             # Consulta 4: Empresas con montos (LIMITADO A 50)
             result_empresas_montos = self.repo_facturas.db.execute(text(query_empresas_montos))
             empresas_montos = []
             
             for i, row in enumerate(result_empresas_montos):
-                tercero_original = row.tercero_original
+                raw_tercero = getattr(row, 'tercero_original', None)
+                tercero_original = formatear_tercero_para_facturas(raw_tercero) or (str(raw_tercero).strip() if raw_tercero else '')
                 try:
                     tercero_sin_ceros = str(int(tercero_original))
                 except Exception:
@@ -173,10 +222,13 @@ class ObtenerEstadisticasFacturas:
                 datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros)
                 
                 # Crear objeto con idcliente, nombre y monto
+                saldo_tipo = "cliente_debe_empresa" if monto > 0 else "empresa_debe_cliente" if monto < 0 else "equilibrado"
                 empresa_info = {
                     "idcliente": tercero_original,  # Mantener el original para referencia
                     "nombre": datos_cliente.get('razsoc', 'Sin nombre') if datos_cliente else 'Sin nombre',
-                    "monto": monto
+                    "monto": monto,
+                    "monto_absoluto": abs(monto),
+                    "saldo_tipo": saldo_tipo,
                 }
                 empresas_montos.append(empresa_info)
             
@@ -205,7 +257,7 @@ class ObtenerEstadisticasFacturas:
                 facturas_vencidas.append({
                     "tipo": row.tipo,
                     "asiento": row.asiento,
-                    "tercero": row.tercero,
+                    "tercero": formatear_tercero_para_facturas(getattr(row, 'tercero', None)),
                     "sociedad": row.sociedad,
                     "vencimiento": row.vencimiento,
                     "dias_vencidos": int(row.dias_vencidos or 0),
@@ -221,6 +273,7 @@ class ObtenerEstadisticasFacturas:
                 "empresas_con_montos": empresas_montos,
                 "sociedades_con_montos": sociedades_montos,
                 "facturas_mas_vencidas": facturas_vencidas,
+                "saldo_resumen": saldo_resumen,
                 "filtros_aplicados": {
                     "tipo_excluido": ["AA", "ZZ"],
                     "colectivo": ["4300", "4302"],

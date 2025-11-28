@@ -23,6 +23,33 @@ def normalizar_tercero(tercero: str) -> str:
         return str(tercero).strip()
 
 
+def formatear_tercero_para_facturas(tercero: Optional[str], longitud: int = 5) -> Optional[str]:
+    """
+    Ajusta el tercero para la tabla de facturas agregando ceros a la izquierda
+    hasta completar `longitud` caracteres (requisito: BPR_0 con 5 d��gitos).
+    """
+    if tercero is None:
+        return None
+
+    normalizado = normalizar_tercero(tercero)
+    if not normalizado:
+        return normalizado
+
+    if normalizado.isdigit():
+        return normalizado.zfill(max(1, longitud))
+
+    return normalizado
+
+
+def normalizar_tercero_para_clientes(tercero: Optional[str]) -> str:
+    """
+    Normaliza el tercero para consultas en la tabla de clientes eliminando ceros iniciales.
+    """
+    if tercero is None:
+        return ''
+    return normalizar_tercero(tercero)
+
+
 def intentar_obtener_cliente(repo_clientes, tercero: str) -> dict:
     """
     Intenta obtener los datos de un cliente usando el tercero original y normalizado.

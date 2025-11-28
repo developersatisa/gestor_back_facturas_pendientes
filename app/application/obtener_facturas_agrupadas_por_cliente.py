@@ -1,6 +1,7 @@
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import date
 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
+from app.infrastructure.tercero_helpers import formatear_tercero_para_facturas
 import logging
 
 logger = logging.getLogger(__name__)
@@ -76,16 +77,23 @@ class ObtenerFacturasAgrupadasPorCliente:
         sociedades_map = {}
         for row in filas_soc:
             try:
-                key = str(row.tercero).strip()
+                raw_tercero = row.tercero
                 soc = str(row.sociedad).strip()
             except Exception:
-                key = str(row[0]).strip()
+                raw_tercero = row[0] if hasattr(row, '__getitem__') else None
                 soc = str(row[1]).strip()
+            
+            key = formatear_tercero_para_facturas(raw_tercero) or (str(raw_tercero).strip() if raw_tercero is not None else '')
             
             if key not in sociedades_map:
                 sociedades_map[key] = set()
             if soc:
                 sociedades_map[key].add(soc)
+                key_sin_ceros = self._normalizar_tercero(key)
+                if key_sin_ceros and key_sin_ceros != key:
+                    if key_sin_ceros not in sociedades_map:
+                        sociedades_map[key_sin_ceros] = set()
+                    sociedades_map[key_sin_ceros].add(soc)
         
         return sociedades_map
 
@@ -143,11 +151,18 @@ class ObtenerFacturasAgrupadasPorCliente:
         asignaciones_map: Dict[int, str]
     ) -> Optional[Dict[str, Any]]:
         """Procesa una fila de cliente y retorna su información"""
-        tercero_original = str(row.tercero).strip() if row.tercero is not None else ''
+        valor_crudo = getattr(row, 'tercero', None)
+        if valor_crudo is None and hasattr(row, '__getitem__'):
+            try:
+                valor_crudo = row[0]
+            except Exception:
+                valor_crudo = None
+        
+        tercero_original = formatear_tercero_para_facturas(valor_crudo) or (str(valor_crudo).strip() if valor_crudo else '')
         tercero_sin_ceros = self._normalizar_tercero(tercero_original)
         
         # Buscar datos del cliente
-        datos_cliente = self._buscar_datos_cliente(tercero_sin_ceros)
+        datos_cliente = self._buscar_datos_cliente(tercero_sin_ceros, tercero_original)
         
         # Determinar idcliente final
         idcliente_final = self._determinar_idcliente_final(
@@ -165,12 +180,14 @@ class ObtenerFacturasAgrupadasPorCliente:
         )
         
         # Calcular monto y estado
-        monto_pendiente = float(row.monto_pendiente) if row.monto_pendiente else 0.0
-        
-        # Filtrar clientes sin saldo pendiente
-        if round(monto_pendiente, 2) <= 0:
+        saldo_neto = float(row.monto_pendiente) if row.monto_pendiente else 0.0
+        saldo_neto = round(saldo_neto, 2)
+        if abs(saldo_neto) < 0.01:
             return None
-        
+
+        saldo_tipo = "cliente_debe_empresa" if saldo_neto > 0 else "empresa_debe_cliente"
+        monto_absoluto = abs(saldo_neto)
+
         estado = self._determinar_estado(row.nivel_reclamacion_max)
         
         # Construir información del cliente
@@ -182,7 +199,11 @@ class ObtenerFacturasAgrupadasPorCliente:
             "cif_empresa": datos_cliente.get('cif_empresa') or 'Sin CIF empresa',
             "cif_factura": datos_cliente.get('cif_factura') or 'Sin CIF facturación',
             "numero_facturas": row.total_facturas,
-            "monto_debe": monto_pendiente,
+            "monto_debe": monto_absoluto,
+            "saldo_neto": saldo_neto,
+            "saldo_tipo": saldo_tipo,
+            "cliente_debe_empresa": saldo_neto > 0,
+            "empresa_debe_cliente": saldo_neto < 0,
             "estado": estado,
             "consultor_asignado": consultor_nombre,
             "sociedades": sorted(list(
@@ -198,15 +219,20 @@ class ObtenerFacturasAgrupadasPorCliente:
         except Exception:
             return tercero_original
 
-    def _buscar_datos_cliente(self, tercero_sin_ceros: str) -> Dict[str, Any]:
-        """Busca los datos del cliente en la base de datos"""
-        if not tercero_sin_ceros:
+    def _buscar_datos_cliente(self, tercero_sin_ceros: str, tercero_original: str) -> Dict[str, Any]:
+        """Busca los datos del cliente en la base de datos con varios intentos."""
+        if not tercero_sin_ceros and not tercero_original:
             return self._crear_datos_cliente_vacio(tercero_sin_ceros)
         
+        # Intento 1: tercero sin ceros (formato que usa la tabla clientes)
         datos_cliente = self.repo_clientes.obtener_cliente(tercero_sin_ceros) or {}
         
+        # Intento 2: si no hay resultado, probar con el valor original (con ceros o espacios)
+        if not datos_cliente and tercero_original and tercero_original != tercero_sin_ceros:
+            datos_cliente = self.repo_clientes.obtener_cliente(tercero_original) or {}
+        
         if not datos_cliente:
-            return self._crear_datos_cliente_vacio(tercero_sin_ceros)
+            return self._crear_datos_cliente_vacio(tercero_sin_ceros or tercero_original)
         
         return datos_cliente
 
@@ -214,7 +240,7 @@ class ObtenerFacturasAgrupadasPorCliente:
         """Crea un diccionario vacío con los datos del cliente"""
         return {
             "idcliente": tercero_sin_ceros,
-            "razsoc": None,
+            "razsoc": f"Cliente {tercero_sin_ceros or 'N/D'}",
             "cif": None,
             "cif_empresa": None,
             "cif_factura": None,

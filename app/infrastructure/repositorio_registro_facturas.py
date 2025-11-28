@@ -35,7 +35,8 @@ class RepositorioRegistroFacturas:
         def _parse_dt(val: Optional[str]) -> Optional[datetime]:
             if not val:
                 return None
-            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            # Aceptar los tres formatos más comunes: ISO con 'T', ISO con espacio y solo fecha
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                 try:
                     return datetime.strptime(val, fmt)
                 except ValueError:
@@ -142,7 +143,10 @@ class RepositorioRegistroFacturas:
                     continue
             return None
 
+        # Resolver consultor y destinatario (respeta el destinatario explícito si se envía)
         consultor_final_id, destinatario_email = self._obtener_email_consultor(consultor_id, idcliente, tercero)
+        if destinatario:
+            destinatario_email = destinatario.strip() or destinatario_email
 
         item = AccionFactura(
             idcliente=idcliente,
@@ -164,7 +168,8 @@ class RepositorioRegistroFacturas:
             enviar_ahora = False
             if item.aviso is not None:
                 hoy = datetime.utcnow().date()
-                enviar_ahora = item.aviso.date() <= hoy
+                # Enviar inmediatamente solo si la fecha de aviso es HOY
+                enviar_ahora = item.aviso.date() == hoy
             if enviar_ahora:
                 from app.services.notificador_consultores import NotificadorConsultores
                 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
@@ -177,7 +182,17 @@ class RepositorioRegistroFacturas:
                     repo_facturas_instance = RepositorioFacturas(facturas_db)
                     repo_clientes_instance = RepositorioClientes(clientes_db)
                     notificador = NotificadorConsultores(self.db, repo_facturas=repo_facturas_instance, repo_clientes=repo_clientes_instance)
-                    notificador.notificar_accion(item)
+                    enviado = notificador.notificar_accion(item)
+                    if enviado:
+                        item.enviada_en = datetime.utcnow()
+                        item.envio_estado = "enviada"
+                    else:
+                        # Marcar fallo u omitida si no hay destinatario
+                        if not item.destinatario:
+                            item.envio_estado = "omitida_sin_destinatario"
+                        else:
+                            item.envio_estado = "fallo"
+                    self.db.commit()
                 finally:
                     # Cerrar las sesiones de facturas y clientes
                     try:
@@ -1042,5 +1057,3 @@ class RepositorioRegistroFacturas:
             "fecha_modificacion": x.fecha_modificacion.isoformat() if x.fecha_modificacion else None,
             "seguimiento_id": x.seguimiento_id,
         }
-
-

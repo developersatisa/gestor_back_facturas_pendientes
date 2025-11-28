@@ -3,6 +3,10 @@ from datetime import date
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.domain.constants import SOCIEDADES_NAMES
+from app.infrastructure.tercero_helpers import (
+    formatear_tercero_para_facturas,
+    normalizar_tercero_para_clientes,
+)
 
 # Mantener compatibilidad con código existente
 SOCIEDADES_LABELS = SOCIEDADES_NAMES
@@ -10,6 +14,55 @@ SOCIEDADES_LABELS = SOCIEDADES_NAMES
 class RepositorioFacturas:
     def __init__(self, db_session: Session):
         self.db = db_session
+
+    def _aplicar_filtro_tercero(self, query: str, params: Dict[str, Any], tercero: Optional[str]) -> str:
+        """Agrega al SQL los filtros necesarios para BPR_0 usando el formato normalizado."""
+        if not tercero:
+            return query
+
+        tercero_str = str(tercero).strip()
+        tercero_facturas = formatear_tercero_para_facturas(tercero_str) or tercero_str
+        tercero_sin_ceros = normalizar_tercero_para_clientes(tercero_str) or tercero_str
+        params["tercero"] = tercero_facturas
+        params["tercero_sin_ceros"] = tercero_sin_ceros
+        len_tercero = len(tercero_sin_ceros) or 1
+        params["len_tercero"] = len_tercero
+        query += """
+        AND (
+            BPR_0 = :tercero
+            OR LTRIM(RTRIM(BPR_0)) = :tercero
+            OR LTRIM(RTRIM(BPR_0)) = :tercero_sin_ceros
+            OR RIGHT(LTRIM(RTRIM(BPR_0)), :len_tercero) = :tercero_sin_ceros
+        )
+        """
+        return query
+
+    def _fila_a_factura(self, row) -> Dict[str, Any]:
+        """Convierte una fila SQL en el diccionario estándar de factura."""
+        importe = float(row.importe) if row.importe is not None else 0.0
+        pago = float(row.pago) if row.pago is not None else 0.0
+        pendiente = round(importe - pago, 2)
+
+        return {
+            'tipo': row.tipo,
+            'asiento': row.asiento,
+            'nombre_factura': getattr(row, 'nombre_factura', None),
+            'sociedad': row.sociedad,
+            'sociedad_nombre': SOCIEDADES_LABELS.get(str(row.sociedad).strip(), None),
+            'planta': getattr(row, 'planta', None),
+            'moneda': getattr(row, 'moneda', None),
+            'colectivo': getattr(row, 'colectivo', None),
+            'tercero': formatear_tercero_para_facturas(getattr(row, 'tercero', None)),
+            'vencimiento': getattr(row, 'vencimiento', None),
+            'forma_pago': getattr(row, 'forma_pago', None),
+            'sentido': getattr(row, 'sentido', None),
+            'importe': importe,
+            'pago': pago,
+            'pendiente': pendiente,
+            'nivel_reclamacion': getattr(row, 'nivel_reclamacion', None),
+            'fecha_reclamacion': getattr(row, 'fecha_reclamacion', None),
+            'check_pago': getattr(row, 'check_pago', None)
+        }
 
     def obtener_facturas(
         self,
@@ -57,21 +110,7 @@ class RepositorioFacturas:
         if sociedad:
             query += " AND CPY_0 = :sociedad"
             params["sociedad"] = sociedad
-        if tercero:
-            tercero_str = str(tercero).strip()
-            tercero_sin_ceros = tercero_str.lstrip('0') or tercero_str
-            params["tercero"] = tercero_str
-            params["tercero_sin_ceros"] = tercero_sin_ceros
-            len_tercero = len(tercero_sin_ceros) or 1
-            params["len_tercero"] = len_tercero
-            query += """
-            AND (
-                BPR_0 = :tercero
-                OR LTRIM(RTRIM(BPR_0)) = :tercero
-                OR LTRIM(RTRIM(BPR_0)) = :tercero_sin_ceros
-                OR RIGHT(LTRIM(RTRIM(BPR_0)), :len_tercero) = :tercero_sin_ceros
-            )
-            """
+        query = self._aplicar_filtro_tercero(query, params, tercero)
         if fecha_desde:
             query += " AND DUDDAT_0 >= :fecha_desde"
             params["fecha_desde"] = fecha_desde
@@ -91,37 +130,140 @@ class RepositorioFacturas:
         # Convertir a formato de respuesta
         facturas = []
         for row in result:
-            # Formatear valores decimales para evitar notación científica
-            importe = float(row.importe) if row.importe is not None else 0.0
-            pago = float(row.pago) if row.pago is not None else 0.0
-            pendiente = round(importe - pago, 2)
-            if pendiente <= 0:
+            factura_dict = self._fila_a_factura(row)
+            if factura_dict['pendiente'] <= 0:
                 # Seguridad adicional por si el filtro SQL no aplica por driver
                 continue
-            
-            factura_dict = {
-                'tipo': row.tipo,
-                'asiento': row.asiento,
-                'nombre_factura': getattr(row, 'nombre_factura', None),
-                'sociedad': row.sociedad,
-                'sociedad_nombre': SOCIEDADES_LABELS.get(str(row.sociedad).strip(), None),
-                'planta': row.planta,
-                'moneda': row.moneda,
-                'colectivo': row.colectivo,
-                'tercero': str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
-                'vencimiento': row.vencimiento,
-                'forma_pago': row.forma_pago,
-                'sentido': row.sentido,
-                'importe': importe,
-                'pago': pago,
-                'pendiente': pendiente,
-                'nivel_reclamacion': row.nivel_reclamacion,
-                'fecha_reclamacion': row.fecha_reclamacion,
-                'check_pago': row.check_pago
-            }
             facturas.append(factura_dict)
         
         return facturas
+
+    def obtener_facturas_negativas(
+        self,
+        sociedad: Optional[str] = None,
+        tercero: Optional[str] = None,
+        fecha_desde: Optional[date] = None,
+        fecha_hasta: Optional[date] = None,
+        nivel_reclamacion: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Obtiene facturas con saldo negativo (la empresa debe al cliente)."""
+        try:
+            bind = self.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return []
+        except Exception:
+            return []
+
+        query = """
+        SELECT TYP_0 as tipo, ACCNUM_0 as asiento, NUM_0 as nombre_factura, CPY_0 as sociedad, FCY_0 as planta, 
+               CUR_0 as moneda, SAC_0 as colectivo, BPR_0 as tercero, DUDDAT_0 as vencimiento, 
+               PAM_0 as forma_pago, SNS_0 as sentido, AMTCUR_0 as importe, PAYCUR_0 as pago, 
+               LEVFUP_0 as nivel_reclamacion, DATFUP_0 as fecha_reclamacion, FLGCLE_0 as check_pago
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE 1=1
+        """
+
+        params: Dict[str, Any] = {}
+
+        query += " AND TYP_0 NOT IN ('AA', 'ZZ')"
+        query += " AND SAC_0 IN ('4300','4302')"
+        query += " AND CPY_0 IN ('S005','S001','S010')"
+        query += " AND DUDDAT_0 < GETDATE()"
+        query += """
+        AND (
+            SNS_0 = -1
+            OR FLGCLE_0 = -1
+            OR AMTCUR_0 < 0
+            OR (AMTCUR_0 - ISNULL(PAYCUR_0, 0)) < 0
+        )
+        """
+
+        if sociedad:
+            query += " AND CPY_0 = :sociedad"
+            params["sociedad"] = sociedad
+
+        query = self._aplicar_filtro_tercero(query, params, tercero)
+
+        if fecha_desde:
+            query += " AND DUDDAT_0 >= :fecha_desde"
+            params["fecha_desde"] = fecha_desde
+        if fecha_hasta:
+            query += " AND DUDDAT_0 <= :fecha_hasta"
+            params["fecha_hasta"] = fecha_hasta
+        if nivel_reclamacion is not None:
+            query += " AND LEVFUP_0 = :nivel_reclamacion"
+            params["nivel_reclamacion"] = nivel_reclamacion
+
+        query += " ORDER BY DUDDAT_0 DESC"
+
+        result = self.db.execute(text(query), params)
+
+        facturas_negativas: List[Dict[str, Any]] = []
+        for row in result:
+            factura_dict = self._fila_a_factura(row)
+            if factura_dict['pendiente'] < 0 or factura_dict['importe'] < 0:
+                facturas_negativas.append(factura_dict)
+
+        return facturas_negativas
+
+    def obtener_asientos_cobro(
+        self,
+        sociedad: Optional[str] = None,
+        tercero: Optional[str] = None,
+        fecha_desde: Optional[date] = None,
+        fecha_hasta: Optional[date] = None,
+        tipos: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Obtiene movimientos tipo COB/VTO para identificar asientos de cobro."""
+        try:
+            bind = self.db.get_bind()  # type: ignore[attr-defined]
+            if not bind or bind.dialect.name != 'mssql':
+                return []
+        except Exception:
+            return []
+
+        query = """
+        SELECT TYP_0 as tipo, ACCNUM_0 as asiento, NUM_0 as nombre_factura, CPY_0 as sociedad, FCY_0 as planta, 
+               CUR_0 as moneda, SAC_0 as colectivo, BPR_0 as tercero, DUDDAT_0 as vencimiento, 
+               PAM_0 as forma_pago, SNS_0 as sentido, AMTCUR_0 as importe, PAYCUR_0 as pago, 
+               LEVFUP_0 as nivel_reclamacion, DATFUP_0 as fecha_reclamacion, FLGCLE_0 as check_pago
+        FROM x3v12.ATISAINT.GACCDUDATE
+        WHERE 1=1
+        """
+
+        params: Dict[str, Any] = {}
+        tipos_lista = tipos or ["COB", "VTO"]
+        if not tipos_lista:
+            tipos_lista = ["COB", "VTO"]
+
+        tipo_param_names = []
+        for idx, tipo in enumerate(tipos_lista):
+            key = f"tipo_{idx}"
+            params[key] = tipo
+            tipo_param_names.append(f":{key}")
+
+        query += f" AND TYP_0 IN ({', '.join(tipo_param_names)})"
+        query += " AND SAC_0 IN ('4300','4302')"
+        query += " AND CPY_0 IN ('S005','S001','S010')"
+        query += " AND FLGCLE_0 <> 2"
+
+        if sociedad:
+            query += " AND CPY_0 = :sociedad"
+            params["sociedad"] = sociedad
+
+        query = self._aplicar_filtro_tercero(query, params, tercero)
+
+        if fecha_desde:
+            query += " AND DUDDAT_0 >= :fecha_desde"
+            params["fecha_desde"] = fecha_desde
+        if fecha_hasta:
+            query += " AND DUDDAT_0 <= :fecha_hasta"
+            params["fecha_hasta"] = fecha_hasta
+
+        query += " ORDER BY DUDDAT_0 DESC"
+
+        result = self.db.execute(text(query), params)
+        return [self._fila_a_factura(row) for row in result]
 
     def buscar_por_numero(self, numero: str) -> List[Dict[str, Any]]:
         """Busca facturas por coincidencia con número o asiento."""
@@ -172,7 +314,7 @@ class RepositorioFacturas:
                     "planta": row.planta,
                     "moneda": row.moneda,
                     "colectivo": row.colectivo,
-                    "tercero": str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
+                    "tercero": formatear_tercero_para_facturas(getattr(row, 'tercero', None)),
                     "vencimiento": row.vencimiento,
                     "forma_pago": row.forma_pago,
                     "sentido": row.sentido,
@@ -235,7 +377,7 @@ class RepositorioFacturas:
                     "planta": row.planta,
                     "moneda": row.moneda,
                     "colectivo": row.colectivo,
-                    "tercero": str(row.tercero).strip() if getattr(row, 'tercero', None) is not None else None,
+                    "tercero": formatear_tercero_para_facturas(getattr(row, 'tercero', None)),
                     "vencimiento": row.vencimiento,
                     "forma_pago": row.forma_pago,
                     "sentido": row.sentido,
@@ -265,7 +407,8 @@ class RepositorioFacturas:
             return None
 
         tercero_str = str(tercero).strip()
-        tercero_sin_ceros = tercero_str.lstrip('0') or tercero_str
+        tercero_facturas = formatear_tercero_para_facturas(tercero_str) or tercero_str
+        tercero_sin_ceros = normalizar_tercero_para_clientes(tercero_str) or tercero_str
 
         # Convertir asiento a entero si es posible, para la comparación en SQL
         try:
@@ -305,7 +448,7 @@ class RepositorioFacturas:
             "tipo": tipo,
             "asiento": str(asiento).strip(),
             "asiento_int": asiento_int,
-            "tercero": tercero_str,
+            "tercero": tercero_facturas,
             "tercero_sin_ceros": tercero_sin_ceros,
             "len_tercero": len(tercero_sin_ceros) or 1,
         }
@@ -362,7 +505,7 @@ class RepositorioFacturas:
             "nombre_factura": nombre_factura,
             "sociedad": row.sociedad,
             "colectivo": row.colectivo,
-            "tercero": str(row.tercero).strip() if getattr(row, "tercero", None) is not None else None,
+            "tercero": formatear_tercero_para_facturas(getattr(row, "tercero", None)),
             "vencimiento": row.vencimiento,
             "importe": importe,
             "pago": pago,
@@ -412,7 +555,8 @@ class RepositorioClientes:
         logger = logging.getLogger(__name__)
         
         codigo_original = str(codigo_tercero).strip()
-        codigo_trim = codigo_original.lstrip('0') or codigo_original
+        codigo_normalizado = normalizar_tercero_para_clientes(codigo_original)
+        codigo_trim = codigo_normalizado or codigo_original
         
         try:
             codigo_int = int(codigo_trim)
@@ -420,7 +564,7 @@ class RepositorioClientes:
             codigo_int = None
 
         # Buscar primero con coincidencias exactas
-        row = self._buscar_cliente_exacto(codigo_original, codigo_trim, codigo_int)
+        row = self._buscar_cliente_exacto(codigo_trim, codigo_int)
         
         # Si no se encontró, intentar búsqueda más flexible con restricción de longitud
         if not row and codigo_int is not None:
@@ -433,7 +577,6 @@ class RepositorioClientes:
 
     def _buscar_cliente_exacto(
         self, 
-        codigo_original: str, 
         codigo_trim: str, 
         codigo_int: Optional[int]
     ) -> Optional[Any]:
@@ -450,8 +593,7 @@ class RepositorioClientes:
             NULLIF(LTRIM(RTRIM(cif_factura)), '') AS cif_factura
         FROM dbo.clientes 
         WHERE
-            LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_tercero
-            OR LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim
+            LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim
             OR (
                 :codigo_int IS NOT NULL
                 AND TRY_CONVERT(INT, LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50))))) = :codigo_int
@@ -460,14 +602,12 @@ class RepositorioClientes:
         ORDER BY 
             CASE 
                 WHEN LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_trim THEN 1
-                WHEN LTRIM(RTRIM(CAST(idcliente AS NVARCHAR(50)))) = :codigo_tercero THEN 2
-                ELSE 3
+                ELSE 2
             END
         """
         
         try:
             result = self.db.execute(text(query), {
-                "codigo_tercero": codigo_original,
                 "codigo_trim": codigo_trim,
                 "codigo_int": codigo_int,
             })

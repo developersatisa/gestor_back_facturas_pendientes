@@ -76,9 +76,18 @@ class NotificadorConsultores:
                     accion.consultor_id = consultor.entidad.id
         
         if not consultor or not consultor.entidad:
-            return False
+            # Si tenemos destinatario_email, enviar aunque no haya consultor asociado
+            if destinatario_email:
+                class _ConsultorAnon:
+                    id = None
+                    nombre = "Consultor"
+                    email = destinatario_email
+                consultor = DatosConsultor(entidad=_ConsultorAnon(), asignacion=None)
+            else:
+                return False
         
         if not destinatario_email:
+            # Sin email en el consultor elegido, no enviamos (evita usar otros correos por error)
             logger.warning("El consultor %s no tiene email configurado; no se puede enviar la notificacion de la accion %s", consultor.entidad.nombre, accion.id)
             return False
 

@@ -9,6 +9,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from app.application.obtener_facturas_filtradas import ObtenerFacturasFiltradas
 from app.application.obtener_estadisticas_facturas import ObtenerEstadisticasFacturas
 from app.application.obtener_facturas_agrupadas_por_cliente import ObtenerFacturasAgrupadasPorCliente
+from app.application.obtener_facturas_negativas import ObtenerFacturasNegativas
+from app.application.obtener_asientos_cobro import ObtenerAsientosCobro
 from app.infrastructure.repositorio_facturas_simple import RepositorioFacturas, RepositorioClientes
 from app.infrastructure.data_enrichers import enrich_factura_with_cliente
 from app.utils.cliente_helpers import build_cliente_cache_key, format_cliente_data
@@ -19,6 +21,7 @@ from app.infrastructure.repositorio_gestion import RepositorioGestion
 from app.infrastructure.repositorio_registro_facturas import RepositorioRegistroFacturas
 from app.domain.models.Factura import Factura
 from app.config.database import get_facturas_db, get_clientes_db, get_gestion_db
+from app.infrastructure.tercero_helpers import formatear_tercero_para_facturas
 import logging
 
 router = APIRouter()
@@ -62,6 +65,68 @@ def obtener_facturas_cliente(
     except Exception as e:
         logger.error(f"Error al obtener facturas del cliente {idcliente}: {e}")
         raise handle_error(e, f"obtener facturas del cliente {idcliente}", "Error interno del servidor")
+
+
+@router.get("/api/facturas-negativas", response_model=List[dict], tags=["Facturas"])
+def obtener_facturas_negativas(
+    sociedad: Optional[str] = Query(None, description="Filtrar por sociedad (CPY_0)"),
+    tercero: Optional[str] = Query(None, description="Código de cliente (BPR_0)"),
+    fecha_desde: Optional[date] = Query(None, description="Filtrar por fecha de vencimiento mínima"),
+    fecha_hasta: Optional[date] = Query(None, description="Filtrar por fecha de vencimiento máxima"),
+    nivel_reclamacion: Optional[int] = Query(None, description="Filtrar por nivel de reclamación"),
+    repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
+    repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
+):
+    try:
+        use_case = ObtenerFacturasNegativas(repo_facturas)
+        facturas = use_case.execute(
+            sociedad=sociedad,
+            tercero=tercero,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            nivel_reclamacion=nivel_reclamacion,
+        )
+
+        return [
+            enrich_factura_with_cliente(f.copy(), repo_clientes)
+            for f in facturas
+        ]
+    except Exception as exc:
+        logger.error("Error al obtener facturas negativas: %s", exc)
+        raise handle_error(exc, "listar facturas negativas", "Error interno al obtener facturas negativas")
+
+
+@router.get("/api/facturas/asientos-cobro", response_model=List[dict], tags=["Facturas"])
+def listar_asientos_cobro(
+    sociedad: Optional[str] = Query(None, description="Filtro por sociedad (CPY_0)"),
+    tercero: Optional[str] = Query(None, description="Código de cliente (BPR_0)"),
+    fecha_desde: Optional[date] = Query(None, description="Fecha mínima de vencimiento"),
+    fecha_hasta: Optional[date] = Query(None, description="Fecha máxima de vencimiento"),
+    tipos: Optional[str] = Query(None, description="Lista de tipos separados por coma (por defecto COB,VTO)"),
+    repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
+    repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
+):
+    try:
+        tipos_list = None
+        if tipos:
+            tipos_list = [t.strip().upper() for t in tipos.split(",") if t.strip()]
+
+        use_case = ObtenerAsientosCobro(repo_facturas)
+        asientos = use_case.execute(
+            sociedad=sociedad,
+            tercero=tercero,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            tipos=tipos_list,
+        )
+
+        return [
+            enrich_factura_with_cliente(asiento.copy(), repo_clientes)
+            for asiento in asientos
+        ]
+    except Exception as exc:
+        logger.error("Error al listar asientos de cobro: %s", exc)
+        raise handle_error(exc, "listar asientos de cobro", "Error interno al obtener asientos de cobro")
 
 @router.get("/api/facturas/buscar", response_model=List[dict], tags=["Facturas"])
 def buscar_factura_por_numero(
@@ -162,10 +227,15 @@ def obtener_estadisticas(
 
 @router.get("/api/estadisticas/excel", tags=["Estadísticas"])
 def descargar_excel_empresas_por_sociedad(
+    filtro: str = "all",
     repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
     repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
 ):
-    """Genera un Excel con las empresas y sus deudas agrupadas por sociedad (GRUPO ATISA, SELIER, ASESORES TITULADOS)"""
+    """Genera un Excel con las empresas y sus deudas agrupadas por sociedad (GRUPO ATISA, SELIER, ASESORES TITULADOS)
+    
+    Args:
+        filtro: Filtro de saldo ('all', 'cliente_debe_empresa', 'empresa_debe_cliente')
+    """
     try:
         # Verificar que el motor sea MSSQL
         try:
@@ -247,7 +317,8 @@ def descargar_excel_empresas_por_sociedad(
         
         for row in facturas_data:
             sociedad = row.sociedad
-            tercero = str(row.tercero)
+            raw_tercero = getattr(row, 'tercero', None)
+            tercero = formatear_tercero_para_facturas(raw_tercero) or (str(raw_tercero).strip() if raw_tercero else '')
             tipo = str(row.tipo) if row.tipo else ''
             asiento = str(row.asiento) if row.asiento else ''
             nombre_factura = str(row.nombre_factura) if row.nombre_factura else f'{tipo}-{asiento}'
@@ -290,16 +361,29 @@ def descargar_excel_empresas_por_sociedad(
             datos_por_sociedad[sociedad][tercero]['total'] += monto
         
         # Convertir a lista y ordenar por total descendente dentro de cada sociedad
-        # IMPORTANTE: Filtrar empresas con saldo neto <= 0 (igual que el listado de empresas)
+        # Aplicar filtro según el parámetro recibido
         for sociedad in datos_por_sociedad:
             empresas_list = []
             for tercero, datos in datos_por_sociedad[sociedad].items():
-                # Solo incluir empresas con saldo neto > 0 (igual que el listado de empresas)
-                if datos['total'] > 0:
-                    # Ordenar facturas por monto descendente
-                    datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
-                    empresas_list.append(datos)
-            empresas_list.sort(key=lambda x: x['total'], reverse=True)
+                total = datos['total']
+                # Aplicar filtro según el parámetro
+                if filtro == 'cliente_debe_empresa':
+                    # Solo empresas con saldo positivo (cobro pendiente)
+                    if total > 0:
+                        datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
+                        empresas_list.append(datos)
+                elif filtro == 'empresa_debe_cliente':
+                    # Solo empresas con saldo negativo (reintegro pendiente)
+                    if total < 0:
+                        datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
+                        empresas_list.append(datos)
+                else:  # filtro == 'all'
+                    # Todas las empresas (positivas y negativas)
+                    if total != 0:  # Excluir empresas con saldo exactamente 0
+                        datos['facturas'].sort(key=lambda x: x['monto'], reverse=True)
+                        empresas_list.append(datos)
+            # Ordenar por valor absoluto del total descendente
+            empresas_list.sort(key=lambda x: abs(x['total']), reverse=True)
             datos_por_sociedad[sociedad] = empresas_list
         
         # Crear el Excel
@@ -319,14 +403,21 @@ def descargar_excel_empresas_por_sociedad(
         center_alignment = Alignment(horizontal='center', vertical='center')
         right_alignment = Alignment(horizontal='right', vertical='center')
         
+        # Determinar título según filtro
+        titulo_filtro = {
+            'all': 'Saldo Total',
+            'cliente_debe_empresa': 'Cobro Pendiente (Saldo a favor del grupo)',
+            'empresa_debe_cliente': 'Reintegro Pendiente (Saldo a favor del cliente)'
+        }.get(filtro, 'Saldo Total')
+        
         # Encabezado principal (ahora hasta K para incluir espacios)
         ws.merge_cells('A1:K1')
-        ws['A1'] = 'Informe de Deudas por Empresa y Sociedad'
+        ws['A1'] = f'Informe de Deudas por Empresa y Sociedad - {titulo_filtro}'
         ws['A1'].font = Font(bold=True, size=16)
         ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
         ws['A1'].fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
         
-        ws['A2'] = f'Fecha de generación: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}'
+        ws['A2'] = f'Fecha de generación: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} | Filtro: {titulo_filtro}'
         ws['A2'].font = Font(size=10, italic=True)
         
         # Obtener datos de las tres sociedades
@@ -764,14 +855,18 @@ def listar_historial_pagadas(
                         FROM x3v12.ATISAINT.GACCDUDATE
                         WHERE ROWID = :factura_id
                     """
-                    gaccdudate_result = repo_facturas.db.execute(sqltext(gaccdudate_sql), {"factura_id": factura_id}).mappings().first()
-                    
+                    gaccdudate_result = repo_facturas.db.execute(
+                        sqltext(gaccdudate_sql), {"factura_id": factura_id}
+                    ).mappings().first()
+
                     if gaccdudate_result:
-                        facturas_pagos[factura_id]['datos_factura'] = gaccdudate_result
+                        datos_factura_map = dict(gaccdudate_result)
+                        datos_factura_map['tercero'] = formatear_tercero_para_facturas(datos_factura_map.get('tercero'))
+                        facturas_pagos[factura_id]['datos_factura'] = datos_factura_map
                     else:
                         # Datos básicos si no se encuentra en GACCDUDATE
                         facturas_pagos[factura_id]['datos_factura'] = {
-                            'tercero': r.get('idcliente'),
+                            'tercero': formatear_tercero_para_facturas(r.get('idcliente')),
                             'vencimiento': None,
                             'sociedad': None,
                             'tipo': None,
@@ -781,7 +876,7 @@ def listar_historial_pagadas(
                 except Exception as e:
                     logger.warning(f"Error consultando GACCDUDATE para factura {factura_id}: {e}")
                     facturas_pagos[factura_id]['datos_factura'] = {
-                        'tercero': r.get('idcliente'),
+                        'tercero': formatear_tercero_para_facturas(r.get('idcliente')),
                         'vencimiento': None,
                         'sociedad': None,
                         'tipo': None,
@@ -887,5 +982,3 @@ def debug_historial_pagadas(
 
 def get_repo_registro(db: Session = Depends(get_gestion_db)):
     return RepositorioRegistroFacturas(db)
-
-
