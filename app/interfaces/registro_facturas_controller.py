@@ -1,6 +1,7 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from pydantic import BaseModel, Field
+import logging
 from sqlalchemy.orm import Session
 from app.config.database import get_gestion_db, init_gestion_db, GestionBase, get_clientes_db, get_facturas_db
 from app.infrastructure.repositorio_registro_facturas import RepositorioRegistroFacturas
@@ -11,6 +12,7 @@ from app.infrastructure.factura_verification import cliente_tiene_facturas_pendi
 from app.utils.error_handlers import handle_error
 
 router = APIRouter(prefix="/api", tags=["Registro Facturas"])
+logger = logging.getLogger(__name__)
 
 
 class CambioFacturaIn(BaseModel):
@@ -125,6 +127,59 @@ class ActualizarAccionIn(BaseModel):
     usuario: Optional[str] = None
 
 
+class MarcarEliminadoIn(BaseModel):
+    usuario: Optional[str] = None
+
+
+class MarcarEliminadosMasivoIn(BaseModel):
+    accion_ids: List[int] = Field(..., description="Lista de IDs de acciones a marcar como eliminadas")
+    usuario: Optional[str] = Field(None, description="Usuario que realiza la acción")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "accion_ids": [1, 2, 3],
+                "usuario": "admin"
+            }
+        }
+
+
+# IMPORTANTE: Las rutas específicas deben ir ANTES que las rutas con parámetros
+# para evitar conflictos de enrutamiento
+@router.put("/facturas/acciones/marcar-eliminados-masivo", response_model=dict)
+def marcar_acciones_como_eliminadas_masivo(
+    payload: MarcarEliminadosMasivoIn,
+    repo: RepositorioRegistroFacturas = Depends(get_repo)
+):
+    """Marca múltiples acciones como eliminadas (borrado lógico masivo)."""
+    try:
+        if not payload.accion_ids or len(payload.accion_ids) == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La lista de IDs de acciones no puede estar vacía")
+        
+        resultados = []
+        errores = []
+        for accion_id in payload.accion_ids:
+            try:
+                resultado = repo.marcar_accion_como_eliminada(accion_id, usuario=payload.usuario)
+                resultados.append(resultado)
+            except ValueError as e:
+                errores.append({"id": accion_id, "error": str(e)})
+            except Exception as e:
+                logger.warning(f"Error marcando acción {accion_id} como eliminada: {e}")
+                errores.append({"id": accion_id, "error": str(e)})
+        
+        return {
+            "marcados": len(resultados),
+            "errores": len(errores),
+            "detalles_errores": errores
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en marcado masivo: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error marcando acciones como eliminadas: {str(e)}")
+
+
 @router.put("/facturas/acciones/{accion_id}", response_model=AccionFacturaOut)
 def actualizar_accion(accion_id: int, payload: ActualizarAccionIn, repo: RepositorioRegistroFacturas = Depends(get_repo)):
     try:
@@ -150,6 +205,25 @@ def eliminar_accion(accion_id: int, repo: RepositorioRegistroFacturas = Depends(
         raise
     except Exception:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error eliminando acción de factura")
+
+
+@router.put("/facturas/acciones/{accion_id}/marcar-eliminado", response_model=AccionFacturaOut)
+def marcar_accion_como_eliminada(
+    accion_id: int,
+    payload: MarcarEliminadoIn,
+    repo: RepositorioRegistroFacturas = Depends(get_repo)
+):
+    """Marca una acción como eliminada (borrado lógico)."""
+    try:
+        resultado = repo.marcar_accion_como_eliminada(accion_id, usuario=payload.usuario)
+        return resultado
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marcando acción como eliminada: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error marcando acción como eliminada")
 
 
 class EmitirPendientesOut(BaseModel):
@@ -195,15 +269,17 @@ def get_repo_facturas(db: Session = Depends(get_facturas_db)):
 @router.get("/facturas/acciones/proximos-avisos", response_model=List[ProximoAvisoOut])
 def listar_proximos_avisos(
     limit: int = 50,
+    incluir_pasados: bool = Query(False, description="Si es True, incluye avisos con fecha anterior a hoy"),
     repo: RepositorioRegistroFacturas = Depends(get_repo),
     repo_clientes: RepositorioClientes = Depends(get_repo_clientes),
     repo_gestion: RepositorioGestion = Depends(get_repo_gestion),
     repo_facturas: RepositorioFacturas = Depends(get_repo_facturas),
 ):
     """Obtiene los próximos avisos (acciones con fecha de aviso >= hoy) de todos los clientes y consultores.
-    Solo incluye avisos de clientes que tienen facturas pendientes."""
+    Solo incluye avisos de clientes que tienen facturas pendientes.
+    Si incluir_pasados es True, también incluye avisos con fecha anterior a hoy."""
     try:
-        avisos = repo.listar_proximos_avisos(limit=limit * 2, repo_facturas=repo_facturas)  # Obtener más para compensar los filtrados
+        avisos = repo.listar_proximos_avisos(limit=limit * 2, incluir_pasados=incluir_pasados, repo_facturas=repo_facturas)  # Obtener más para compensar los filtrados
         
         resultado = []
         for aviso in avisos:

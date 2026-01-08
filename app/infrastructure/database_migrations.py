@@ -71,6 +71,14 @@ def migrate_factura_acciones_columns(conn) -> None:
     conn.execute(text("IF COL_LENGTH('dbo.factura_acciones','usuario_modificacion') IS NULL ALTER TABLE dbo.factura_acciones ADD usuario_modificacion NVARCHAR(100) NULL;"))
     conn.execute(text("IF COL_LENGTH('dbo.factura_acciones','fecha_modificacion') IS NULL ALTER TABLE dbo.factura_acciones ADD fecha_modificacion DATETIME2 NULL;"))
     
+    # Añadir columna eliminado para borrado lógico
+    conn.execute(text("""
+        IF COL_LENGTH('dbo.factura_acciones','eliminado') IS NULL 
+        BEGIN
+            ALTER TABLE dbo.factura_acciones ADD eliminado BIT NOT NULL CONSTRAINT DF_factura_acciones_eliminado DEFAULT(0);
+        END
+    """))
+    
     # Migración: hacer accion_tipo nullable para permitir acciones placeholder
     conn.execute(text("""
         IF COL_LENGTH('dbo.factura_acciones','accion_tipo') IS NOT NULL 

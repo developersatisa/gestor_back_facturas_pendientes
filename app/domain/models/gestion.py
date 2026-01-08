@@ -98,6 +98,9 @@ class AccionFactura(GestionBase):
     # Auditoría
     usuario_modificacion = Column(String(100), nullable=True)
     fecha_modificacion = Column(DateTime, nullable=True)
+    
+    # Borrado lógico
+    eliminado = Column(Boolean, nullable=False, default=False)
 
     # Sin restricciones adicionales
 

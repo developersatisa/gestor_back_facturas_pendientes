@@ -1,4 +1,5 @@
-﻿import logging
+﻿import html
+import logging
 import smtplib
 import ssl
 from dataclasses import dataclass
@@ -92,10 +93,10 @@ class NotificadorConsultores:
             return False
 
         # Enviar solo por email; 'accion_tipo' se incluye como instrucción en el mensaje
-        subject, cuerpo = self._construir_mensaje(accion, consultor)
+        subject, cuerpo_html, cuerpo_texto = self._construir_mensaje(accion, consultor)
         accion.consultor_id = consultor.entidad.id
         
-        enviado = self._intentar_email([destinatario_email], subject, cuerpo)
+        enviado = self._intentar_email([destinatario_email], subject, cuerpo_html, cuerpo_texto)
         if enviado:
             accion.destinatario = destinatario_email
             return True
@@ -103,7 +104,7 @@ class NotificadorConsultores:
             logger.warning("No se pudo enviar la notificacion por email para la accion %s", accion.id)
             return False
 
-    def _intentar_email(self, destinatarios: Sequence[Optional[str]], subject: str, cuerpo: str) -> bool:
+    def _intentar_email(self, destinatarios: Sequence[Optional[str]], subject: str, cuerpo_html: str, cuerpo_texto: Optional[str] = None) -> bool:
         correos = [d.strip() for d in destinatarios if d and d.strip()]
         if not correos:
             return False
@@ -125,7 +126,13 @@ class NotificadorConsultores:
         mensaje["Subject"] = subject
         mensaje["From"] = remitente
         mensaje["To"] = ", ".join(correos)
-        mensaje.set_content(cuerpo)
+        
+        # Establecer contenido HTML
+        mensaje.set_content(cuerpo_html, subtype='html')
+        
+        # Si hay versión texto plano, añadirla como alternativa
+        if cuerpo_texto:
+            mensaje.add_alternative(cuerpo_texto, subtype='plain')
 
         try:
             smtp = smtplib.SMTP(host, port, timeout=15)
@@ -169,7 +176,7 @@ class NotificadorConsultores:
         self,
         accion: AccionFactura,
         consultor: DatosConsultor,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         cliente_id = consultor.asignacion.idcliente if consultor.asignacion else accion.idcliente
         
         # Obtener nombre del cliente
@@ -194,7 +201,140 @@ class NotificadorConsultores:
         canal = (accion.accion_tipo or 'N/A').strip()
         portal_url = "https://demoimpagos.atisa.es/dashboard"
 
-        cuerpo = [
+        # Escapar valores para HTML
+        nombre_consultor_html = html.escape(consultor.entidad.nombre or 'consultor')
+        canal_html = html.escape(canal.upper())
+        texto_cliente_html = html.escape(texto_cliente or 'Desconocido')
+        referencia_html = html.escape(referencia or 'N/D')
+        descripcion_html = html.escape(accion.descripcion or 'Sin descripción')
+        aviso_html = html.escape(aviso)
+        usuario_html = html.escape(accion.usuario or 'Sistema')
+        creado_html = html.escape(creado)
+        email_consultor_html = html.escape(consultor.entidad.email) if consultor.entidad.email else ""
+
+        # Construir HTML del correo
+        cuerpo_html = f"""
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
+    <style>
+        /* Optimizaciones para Modo Oscuro */
+        @media (prefers-color-scheme: dark) {{
+            body, .bg-body {{ background-color: #000000 !important; }}
+            .card {{ 
+                background-color: #0a0a0a !important; 
+                border: 1px solid #262626 !important; 
+            }}
+            .text-title {{ color: #ffffff !important; }}
+            .text-content {{ color: #d4d4d8 !important; }}
+            .text-label {{ color: #71717a !important; }}
+            .data-section {{ background-color: #171717 !important; }}
+            .header-line {{ border-bottom: 2px solid #ffffff !important; }}
+            .cta-button {{ background-color: #ffffff !important; color: #000000 !important; }}
+        }}
+    </style>
+</head>
+<body class="bg-body" style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" class="bg-body" style="background-color: #f8fafc; padding: 60px 10px;">
+        <tr>
+            <td align="center">
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" class="card" style="max-width: 480px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.03);">
+                    <tr>
+                        <td style="padding: 40px;">
+                            
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td class="header-line" style="padding-bottom: 25px; border-bottom: 2px solid #000000;">
+                                        <div class="text-label" style="color: #a1a1aa; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 10px;">Atisa Gestión</div>
+                                        <div class="text-title" style="color: #000000; font-size: 26px; font-weight: 800; line-height: 1.1; letter-spacing: -0.02em;">Recordatorio<br>de Acción</div>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td style="padding: 30px 0 20px 0;">
+                                        <p class="text-content" style="margin: 0; color: #3f3f46; font-size: 15px; line-height: 1.6;">
+                                            Hola <strong class="text-title" style="color: #000000;">{nombre_consultor_html}</strong>, se ha activado una tarea programada para la siguiente cuenta:
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0" class="data-section" style="background-color: #f9fafb; border-radius: 12px; padding: 25px; margin-bottom: 25px;">
+                                <tr>
+                                    <td style="padding-bottom: 20px;">
+                                        <div class="text-label" style="color: #71717a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;">Cliente</div>
+                                        <div class="text-title" style="color: #000000; font-size: 15px; font-weight: 700;">{texto_cliente_html}</div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>
+                                        <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td width="55%">
+                                                    <div class="text-label" style="color: #71717a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;">Referencia</div>
+                                                    <div class="text-title" style="color: #000000; font-size: 13px; font-family: monospace; font-weight: 600;">{referencia_html}</div>
+                                                </td>
+                                                <td width="45%" style="text-align: right;">
+                                                    <div class="text-label" style="color: #71717a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;">Canal</div>
+                                                    <div class="cta-button" style="display: inline-block; background-color: #000000; color: #ffffff; font-size: 9px; font-weight: 800; padding: 4px 10px; border-radius: 4px; text-transform: uppercase;">{canal_html}</div>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td style="padding-bottom: 35px; border-left: 3px solid #e5e7eb; padding-left: 20px;">
+                                        <p class="text-content" style="margin: 0; color: #52525b; font-size: 14px; line-height: 1.6; font-style: italic;">
+                                            "{descripcion_html}"
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td>
+                                        <a href="{portal_url}" class="cta-button" style="display: block; background-color: #000000; color: #ffffff; text-align: center; padding: 20px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; letter-spacing: 0.02em;">
+                                            Abrir Gestión en Portal
+                                        </a>
+                                    </td>
+                                </tr>
+                            </table>
+
+                        </td>
+                    </tr>
+                </table>
+
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 480px;">
+                    <tr>
+                        <td style="padding: 30px 10px 0 10px; text-align: left;">
+                            <p style="margin: 0; color: #a1a1aa; font-size: 11px; line-height: 1.8;">
+                                Registrado por <span class="text-content" style="color: #71717a; font-weight: 600;">{usuario_html}</span><br>
+                                {email_consultor_html if email_consultor_html else 'N/D'} • {creado_html}<br>
+                                Atisa Gestión Operativa
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+"""
+
+        # Versión texto plano como fallback
+        cuerpo_texto = [
             f"Hola {consultor.entidad.nombre or 'consultor'},",
             "",
             f"Se ha registrado una nueva accion.",
@@ -207,9 +347,9 @@ class NotificadorConsultores:
         ]
 
         if consultor.entidad.email:
-            cuerpo.append(f"- Email del consultor: {consultor.entidad.email}")
+            cuerpo_texto.append(f"- Email del consultor: {consultor.entidad.email}")
 
-        cuerpo.extend([
+        cuerpo_texto.extend([
             "",
             f"Accede al portal para gestionar el recordatorio: {portal_url}",
             f"Canal seleccionado: {canal.upper()}",
@@ -218,8 +358,7 @@ class NotificadorConsultores:
             "Sistema de Gestion de Facturas Pendientes",
         ])
 
-        # Usar CRLF para asegurar saltos de línea consistentes en clientes de correo.
-        return subject, "\r\n".join(cuerpo)
+        return subject, cuerpo_html, "\r\n".join(cuerpo_texto)
 
     def notificar_acciones_agrupadas(self, acciones: Sequence[AccionFactura]) -> bool:
         """
@@ -241,8 +380,8 @@ class NotificadorConsultores:
             return False
 
         # Construir mensaje agrupado
-        subject, cuerpo = self._construir_mensaje_agrupado(acciones, consultor)
-        enviado = self._intentar_email([destinatario_email], subject, cuerpo)
+        subject, cuerpo_html, cuerpo_texto = self._construir_mensaje_agrupado(acciones, consultor)
+        enviado = self._intentar_email([destinatario_email], subject, cuerpo_html, cuerpo_texto)
         
         if enviado:
             # Marcar todas las acciones como enviadas
@@ -261,7 +400,7 @@ class NotificadorConsultores:
         self,
         acciones: Sequence[AccionFactura],
         consultor: DatosConsultor,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         """Construye un mensaje agrupado para múltiples acciones del mismo seguimiento."""
         primera = acciones[0]
         cliente_id = consultor.asignacion.idcliente if consultor.asignacion else primera.idcliente
@@ -285,7 +424,98 @@ class NotificadorConsultores:
         elif primera.tercero:
             texto_cliente = nombre_cliente if nombre_cliente else f"Cliente {primera.tercero}"
 
-        cuerpo = [
+        # Escapar valores para HTML
+        nombre_consultor_html = html.escape(consultor.entidad.nombre or 'consultor')
+        canal_html = html.escape(canal.upper())
+        texto_cliente_html = html.escape(texto_cliente or 'Desconocido')
+        descripcion_html = html.escape(primera.descripcion or 'Sin descripción')
+        aviso_html = html.escape(aviso)
+        usuario_html = html.escape(primera.usuario or 'Sistema')
+        creado_html = html.escape(creado)
+
+        # Construir lista de referencias HTML
+        referencias_html = ""
+        for idx, accion in enumerate(acciones, 1):
+            nombre_factura = self._obtener_nombre_factura(accion)
+            referencia = nombre_factura or f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
+            referencia_html = html.escape(referencia or 'N/D')
+            referencias_html += f"<tr><td>{idx}.</td><td><strong>{referencia_html}</strong></td></tr>"
+
+        # Construir HTML del correo agrupado
+        cuerpo_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {{ font-family: 'Segoe UI', Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; }}
+        .header {{ background-color: #2c3e50; padding: 20px; text-align: center; color: white; }}
+        .content {{ padding: 30px; background-color: #ffffff; }}
+        .badge {{ background-color: #e67e22; color: white; padding: 4px 12px; border-radius: 15px; font-size: 12px; text-transform: uppercase; font-weight: bold; }}
+        .detail-table {{ width: 100%; margin: 20px 0; border-collapse: collapse; }}
+        .detail-table td {{ padding: 10px; border-bottom: 1px solid #f0f0f0; }}
+        .label {{ font-weight: bold; color: #7f8c8d; width: 35%; }}
+        .button-container {{ text-align: center; margin-top: 30px; }}
+        .button {{ background-color: #3498db; color: white !important; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; }}
+        .footer {{ background-color: #f9f9f9; padding: 20px; text-align: center; font-size: 12px; color: #95a5a6; }}
+        .facturas-list {{ margin: 20px 0; }}
+        .facturas-list table {{ width: 100%; border-collapse: collapse; }}
+        .facturas-list td {{ padding: 8px; border-bottom: 1px solid #f0f0f0; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2 style="margin:0;">Notificación de Gestión - Acciones Agrupadas</h2>
+        </div>
+        <div class="content">
+            <p>Hola <strong>{nombre_consultor_html}</strong>,</p>
+            <p>Se han registrado <strong>{len(acciones)}</strong> acciones agrupadas para el mismo seguimiento:</p>
+            
+            <table class="detail-table">
+                <tr>
+                    <td class="label">Tipo de acción</td>
+                    <td><span class="badge">{canal_html}</span></td>
+                </tr>
+                <tr>
+                    <td class="label">Cliente</td>
+                    <td>{texto_cliente_html}</td>
+                </tr>
+                <tr>
+                    <td class="label">Descripción común</td>
+                    <td>{descripcion_html}</td>
+                </tr>
+                <tr>
+                    <td class="label">Fecha de aviso</td>
+                    <td>{aviso_html}</td>
+                </tr>
+                <tr>
+                    <td class="label">Registrado por</td>
+                    <td>{usuario_html} el {creado_html}</td>
+                </tr>
+            </table>
+
+            <div class="facturas-list">
+                <h3>Facturas incluidas ({len(acciones)} facturas):</h3>
+                <table>
+                    {referencias_html}
+                </table>
+            </div>
+
+            <div class="button-container">
+                <a href="{portal_url}" class="button">Gestionar en el Portal</a>
+            </div>
+        </div>
+        <div class="footer">
+            Sistema de Gestión de Facturas Pendientes<br>
+            Este es un correo automático, por favor no responda.
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+        # Versión texto plano como fallback
+        cuerpo_texto = [
             f"Hola {consultor.entidad.nombre or 'consultor'},",
             "",
             f"Se han registrado {len(acciones)} acciones agrupadas para el mismo seguimiento.",
@@ -303,23 +533,21 @@ class NotificadorConsultores:
             f"Registrado por: {primera.usuario or 'Sistema'} el {creado}",
         ]
         for linea in info_lines:
-            cuerpo.append(linea)
-            cuerpo.append("")  # línea en blanco para forzar salto incluso en clientes que reflow
+            cuerpo_texto.append(linea)
+            cuerpo_texto.append("")
 
-        cuerpo.extend([
+        cuerpo_texto.extend([
             "═══════════════════════════════════════════════════════════",
             f"📄 FACTURAS INCLUIDAS ({len(acciones)} facturas)",
             "═══════════════════════════════════════════════════════════",
         ])
 
-        # Listar todas las facturas de forma clara
         for idx, accion in enumerate(acciones, 1):
-            # Obtener nombre de factura (ID de factura como SE0025001972)
             nombre_factura = self._obtener_nombre_factura(accion)
             referencia = nombre_factura or f"{accion.tipo or ''}-{accion.asiento or ''}".strip("-")
-            cuerpo.append(f"{idx}. Referencia: {referencia or 'N/D'}")
+            cuerpo_texto.append(f"{idx}. Referencia: {referencia or 'N/D'}")
 
-        cuerpo.extend([
+        cuerpo_texto.extend([
             "",
             "═══════════════════════════════════════════════════════════",
             "",
@@ -330,8 +558,7 @@ class NotificadorConsultores:
             "Sistema de Gestion de Facturas Pendientes",
         ])
 
-        # Usar CRLF para asegurar saltos de línea consistentes en clientes de correo.
-        return subject, "\r\n".join(cuerpo)
+        return subject, cuerpo_html, "\r\n".join(cuerpo_texto)
 
     def _obtener_nombre_cliente(self, accion: AccionFactura) -> Optional[str]:
         """Obtiene el nombre del cliente desde la base de datos"""

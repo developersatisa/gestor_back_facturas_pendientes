@@ -22,16 +22,59 @@ def _augment_pyodbc_url(url_str: str) -> str:
     """Ensure pyodbc URL includes an explicit driver to avoid IM002.
 
     If using mssql+pyodbc without `driver=` or `odbc_connect=`, append
-    `driver=<name>&TrustServerCertificate=yes`.
+    `driver=<name>&TrustServerCertificate=yes&Connection+Timeout=60`.
+    
+    For instance names with IP addresses, use odbc_connect to avoid URL encoding issues.
     """
     try:
         if url_str and url_str.startswith("mssql+pyodbc") and "odbc_connect=" not in url_str:
+            import re
+            from urllib.parse import quote_plus, unquote
+            
+            # Buscar instancias con nombre usando IP: @IP\INSTANCE
+            pattern = r'mssql\+pyodbc://([^:]+):([^@]+)@(\d+\.\d+\.\d+\.\d+)\\([^/]+)/([^?]+)'
+            match = re.search(pattern, url_str)
+            
+            if match:
+                # Tenemos una instancia con nombre usando IP - usar odbc_connect
+                user = match.group(1)
+                password = match.group(2)
+                ip = match.group(3)
+                instance = match.group(4)
+                database = match.group(5)
+                
+                # Extraer parámetros adicionales si existen
+                params = ""
+                if "?" in url_str:
+                    params = url_str.split("?", 1)[1]
+                
+                # Construir cadena ODBC directamente
+                driver = get_odbc_driver_name()
+                odbc_str = f"DRIVER={{{driver}}};SERVER={ip}\\{instance};DATABASE={database};UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=yes;Connection Timeout=60"
+                
+                # Construir URL con odbc_connect
+                odbc_encoded = quote_plus(odbc_str)
+                url_str = f"mssql+pyodbc://?odbc_connect={odbc_encoded}"
+                return url_str
+            
+            # Si no hay instancia con nombre, procesar normalmente
+            # Asegurar que tenga driver
             if "driver=" not in url_str:
                 driver = get_odbc_driver_name().replace(" ", "+")
                 sep = "&" if "?" in url_str else "?"
-                url_str = f"{url_str}{sep}driver={driver}&TrustServerCertificate=yes"
-    except Exception:
-        pass
+                url_str = f"{url_str}{sep}driver={driver}"
+            
+            # Asegurar que tenga TrustServerCertificate
+            if "TrustServerCertificate=" not in url_str:
+                sep = "&" if "?" in url_str else "?"
+                url_str = f"{url_str}{sep}TrustServerCertificate=yes"
+            
+            # Asegurar que tenga Connection Timeout aumentado
+            if "Connection+Timeout=" not in url_str and "Connection%20Timeout=" not in url_str:
+                sep = "&" if "?" in url_str else "?"
+                url_str = f"{url_str}{sep}Connection+Timeout=60"
+    except Exception as e:
+        logger.warning(f"Error procesando URL pyodbc: {e}")
     return url_str
 
 
@@ -54,7 +97,7 @@ facturas_engine = create_engine(
     pool_reset_on_return='rollback',  # Rollback para limpiar transacciones
     echo=False,             # Desactivar logging SQL
     connect_args={
-        "timeout": 10,      # Timeout corto de conexión
+        "timeout": 60,      # Timeout aumentado para conexiones lentas/instancias con nombre
         "autocommit": False,
         "charset": "utf8mb4"
     }
@@ -73,7 +116,7 @@ clientes_engine = create_engine(
     pool_reset_on_return='rollback',  # Rollback para limpiar transacciones
     echo=False,             # Desactivar logging SQL
     connect_args={
-        "timeout": 10,      # Timeout corto de conexión
+        "timeout": 60,      # Timeout aumentado para conexiones lentas/instancias con nombre
         "autocommit": False,
         "charset": "utf8mb4"
     }

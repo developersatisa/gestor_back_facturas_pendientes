@@ -1,7 +1,8 @@
 import os
 
-from fastapi import FastAPI, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Depends, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -48,6 +49,18 @@ app.add_middleware(
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Handler para errores de validación de Pydantic
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    logger.error(f"Error de validación en {request.url.path}: {exc.errors()}")
+    logger.error(f"Body recibido: {body.decode('utf-8') if body else 'None'}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors(), "body_received": body.decode('utf-8') if body else None}
+    )
 
 # Registro de routers
 app.include_router(facturas_router)

@@ -715,6 +715,7 @@ class RepositorioRegistroFacturas:
         return self._accion_to_dict(accion)
 
     def eliminar_accion(self, accion_id: int) -> bool:
+        """Elimina físicamente una acción (método legacy)."""
         accion = self.db.get(AccionFactura, accion_id)
         if not accion:
             return False
@@ -729,6 +730,23 @@ class RepositorioRegistroFacturas:
         self.db.delete(accion)
         self.db.commit()
         return True
+    
+    def marcar_accion_como_eliminada(self, accion_id: int, usuario: Optional[str] = None) -> Dict[str, Any]:
+        """Marca una acción como eliminada (borrado lógico)."""
+        accion = self.db.get(AccionFactura, accion_id)
+        if not accion:
+            raise ValueError(f"Acción con ID {accion_id} no encontrada")
+        
+        if accion.eliminado:
+            raise ValueError(f"La acción con ID {accion_id} ya está marcada como eliminada")
+        
+        accion.eliminado = True
+        accion.usuario_modificacion = usuario
+        accion.fecha_modificacion = datetime.utcnow()
+        
+        self.db.commit()
+        self.db.refresh(accion)
+        return self._accion_to_dict(accion)
 
     # Envío programado de acciones
     def _parse_fecha(self, valor: Optional[str]) -> Optional[date]:
@@ -1012,15 +1030,23 @@ class RepositorioRegistroFacturas:
             "creado_en": x.creado_en.isoformat(),
         }
 
-    def listar_proximos_avisos(self, *, limit: int = 50, repo_facturas=None) -> List[Dict[str, Any]]:
-        """Obtiene los próximos avisos (acciones con fecha de aviso >= hoy), ordenados por fecha ascendente."""
+    def listar_proximos_avisos(self, *, limit: int = 50, incluir_pasados: bool = False, repo_facturas=None) -> List[Dict[str, Any]]:
+        """Obtiene los próximos avisos (acciones con fecha de aviso >= hoy), ordenados por fecha ascendente.
+        Si incluir_pasados es True, también incluye avisos con fecha anterior a hoy.
+        Excluye los avisos marcados como eliminados."""
         from datetime import date as date_type
         hoy = datetime.utcnow().date()
         
-        stmt = select(AccionFactura).where(
+        condiciones = [
             AccionFactura.aviso.isnot(None),
-            AccionFactura.aviso >= datetime.combine(hoy, datetime.min.time())
-        ).order_by(AccionFactura.aviso.asc()).limit(limit)
+            AccionFactura.eliminado == False  # Excluir eliminados
+        ]
+        if not incluir_pasados:
+            condiciones.append(AccionFactura.aviso >= datetime.combine(hoy, datetime.min.time()))
+        
+        stmt = select(AccionFactura).where(
+            *condiciones
+        ).order_by(AccionFactura.aviso.desc() if incluir_pasados else AccionFactura.aviso.asc()).limit(limit)
         
         rows = self.db.execute(stmt).scalars().all()
         resultado = []
@@ -1057,4 +1083,5 @@ class RepositorioRegistroFacturas:
             "usuario_modificacion": x.usuario_modificacion,
             "fecha_modificacion": x.fecha_modificacion.isoformat() if x.fecha_modificacion else None,
             "seguimiento_id": x.seguimiento_id,
+            "eliminado": x.eliminado if hasattr(x, 'eliminado') else False,
         }
