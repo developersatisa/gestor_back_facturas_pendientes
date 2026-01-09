@@ -140,8 +140,29 @@ class NotificadorConsultores:
                 if use_starttls:
                     context = ssl.create_default_context()
                     smtp.starttls(context=context)
-                if username:
-                    smtp.login(username, password)
+                
+                # Intentar autenticación si hay credenciales
+                # Si el servidor no soporta autenticación (relay interno), continuar sin auth
+                if username and password:
+                    try:
+                        smtp.login(username, password)
+                        logger.debug("Autenticación SMTP exitosa")
+                    except smtplib.SMTPNotSupportedError:
+                        # El servidor no soporta autenticación (relay interno), continuar sin auth
+                        logger.debug("Servidor SMTP no soporta autenticación, enviando sin auth (relay interno)")
+                    except smtplib.SMTPAuthenticationError as auth_exc:
+                        # Error de credenciales - esto es un error real que debemos reportar
+                        logger.warning("Error de autenticación SMTP (credenciales incorrectas): %s", auth_exc)
+                        raise  # Re-lanzar para que se capture como error
+                    except Exception as auth_exc:
+                        # Otro error de autenticación - puede ser que el servidor no lo requiera
+                        error_msg = str(auth_exc).lower()
+                        if "auth" in error_msg and "not supported" in error_msg:
+                            logger.debug("Servidor SMTP no soporta autenticación, enviando sin auth")
+                        else:
+                            # Error desconocido, intentar continuar sin auth
+                            logger.debug("Error en autenticación SMTP (continuando sin auth): %s", auth_exc)
+                
                 smtp.send_message(mensaje)
             return True
         except Exception as exc:
