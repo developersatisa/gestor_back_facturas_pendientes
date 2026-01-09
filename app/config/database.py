@@ -24,48 +24,112 @@ def _augment_pyodbc_url(url_str: str) -> str:
     If using mssql+pyodbc without `driver=` or `odbc_connect=`, append
     `driver=<name>&TrustServerCertificate=yes&Connection+Timeout=60`.
     
-    For instance names with IP addresses, use odbc_connect to avoid URL encoding issues.
+    Supports:
+    - Named instances: IP\INSTANCE
+    - Port-based connections: IP,port or IP:port
+    - Uses odbc_connect for better compatibility with special characters in passwords.
     """
     try:
         if url_str and url_str.startswith("mssql+pyodbc") and "odbc_connect=" not in url_str:
             import re
-            from urllib.parse import quote_plus, unquote
+            from urllib.parse import quote_plus, unquote, parse_qs, urlparse
             
-            # Buscar instancias con nombre usando IP: @IP\INSTANCE
-            pattern = r'mssql\+pyodbc://([^:]+):([^@]+)@(\d+\.\d+\.\d+\.\d+)\\([^/]+)/([^?]+)'
-            match = re.search(pattern, url_str)
+            # Extraer parámetros de la URL para respetar Encrypt y otros parámetros
+            parsed = urlparse(url_str)
+            query_params = parse_qs(parsed.query)
             
-            if match:
+            # Determinar valores de Encrypt y TrustServerCertificate desde la URL
+            encrypt_value = "no"
+            if "Encrypt" in query_params:
+                encrypt_value = query_params["Encrypt"][0].lower()
+            elif "Encrypt=yes" in url_str or "Encrypt%3Dyes" in url_str:
+                encrypt_value = "yes"
+            
+            trust_cert = "yes"
+            if "TrustServerCertificate" in query_params:
+                trust_cert = query_params["TrustServerCertificate"][0].lower()
+            elif "TrustServerCertificate=no" in url_str or "TrustServerCertificate%3Dno" in url_str:
+                trust_cert = "no"
+            
+            # Patrón 1: Instancia nombrada con IP: IP\INSTANCE
+            pattern_instance = r'mssql\+pyodbc://([^:]+):([^@]+)@(\d+\.\d+\.\d+\.\d+)\\([^/]+)/([^?]+)'
+            match_instance = re.search(pattern_instance, url_str)
+            
+            if match_instance:
                 # Tenemos una instancia con nombre usando IP - usar odbc_connect
-                user = match.group(1)
-                password = match.group(2)
-                ip = match.group(3)
-                instance = match.group(4)
-                database = match.group(5)
+                user = match_instance.group(1)
+                password = unquote(match_instance.group(2))  # Decodificar contraseña
+                ip = match_instance.group(3)
+                instance = match_instance.group(4)
+                database = match_instance.group(5)
                 
-                # Extraer parámetros adicionales si existen
-                params = ""
-                if "?" in url_str:
-                    params = url_str.split("?", 1)[1]
-                
-                # Construir cadena ODBC directamente
                 driver = get_odbc_driver_name()
-                odbc_str = f"DRIVER={{{driver}}};SERVER={ip}\\{instance};DATABASE={database};UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=yes;Connection Timeout=60"
+                server_name = f"{ip}\\{instance}"
                 
-                # Construir URL con odbc_connect
+                # Construir cadena ODBC respetando los valores de Encrypt de la URL
+                odbc_str = (
+                    f"DRIVER={{{driver}}};"
+                    f"SERVER={server_name};"
+                    f"DATABASE={database};"
+                    f"UID={user};"
+                    f"PWD={password};"
+                    f"TrustServerCertificate={trust_cert};"
+                    f"Encrypt={encrypt_value};"
+                    f"Connection Timeout=60;"
+                    f"MultiSubnetFailover=no"
+                )
+                
                 odbc_encoded = quote_plus(odbc_str)
                 url_str = f"mssql+pyodbc://?odbc_connect={odbc_encoded}"
+                logger.info(f"Construida cadena ODBC para instancia nombrada: {server_name} (BD: {database}, Encrypt={encrypt_value})")
                 return url_str
             
-            # Si no hay instancia con nombre, procesar normalmente
+            # Patrón 2: Conexión por puerto con formato IP,puerto o IP:puerto
+            pattern_port_comma = r'mssql\+pyodbc://([^:]+):([^@]+)@(\d+\.\d+\.\d+\.\d+),(\d+)/([^?]+)'
+            pattern_port_colon = r'mssql\+pyodbc://([^:]+):([^@]+)@(\d+\.\d+\.\d+\.\d+):(\d+)/([^?]+)'
+            
+            match_port_comma = re.search(pattern_port_comma, url_str)
+            match_port_colon = re.search(pattern_port_colon, url_str)
+            
+            if match_port_comma or match_port_colon:
+                match_port = match_port_comma or match_port_colon
+                user = match_port.group(1)
+                password = unquote(match_port.group(2))  # Decodificar contraseña
+                ip = match_port.group(3)
+                port = match_port.group(4)
+                database = match_port.group(5)
+                
+                driver = get_odbc_driver_name()
+                # Formato ODBC para puerto: IP,puerto (con coma)
+                server_name = f"{ip},{port}"
+                
+                # Construir cadena ODBC respetando los valores de Encrypt de la URL
+                odbc_str = (
+                    f"DRIVER={{{driver}}};"
+                    f"SERVER={server_name};"
+                    f"DATABASE={database};"
+                    f"UID={user};"
+                    f"PWD={password};"
+                    f"TrustServerCertificate={trust_cert};"
+                    f"Encrypt={encrypt_value};"
+                    f"Connection Timeout=60;"
+                    f"MultiSubnetFailover=no"
+                )
+                
+                odbc_encoded = quote_plus(odbc_str)
+                url_str = f"mssql+pyodbc://?odbc_connect={odbc_encoded}"
+                logger.info(f"Construida cadena ODBC para conexión por puerto: {server_name} (BD: {database}, Encrypt={encrypt_value})")
+                return url_str
+            
+            # Si no hay instancia nombrada ni puerto, procesar normalmente
             # Asegurar que tenga driver
             if "driver=" not in url_str:
                 driver = get_odbc_driver_name().replace(" ", "+")
                 sep = "&" if "?" in url_str else "?"
                 url_str = f"{url_str}{sep}driver={driver}"
             
-            # Asegurar que tenga TrustServerCertificate
-            if "TrustServerCertificate=" not in url_str:
+            # Asegurar que tenga TrustServerCertificate (solo si no está ya especificado)
+            if "TrustServerCertificate=" not in url_str and "TrustServerCertificate%3D" not in url_str:
                 sep = "&" if "?" in url_str else "?"
                 url_str = f"{url_str}{sep}TrustServerCertificate=yes"
             
@@ -197,8 +261,20 @@ def log_odbc_env_diagnostics():
     try:
         if FACTURAS_DATABASE_URL.startswith("mssql+pyodbc") or CLIENTES_DATABASE_URL.startswith("mssql+pyodbc"):
             _log_available_odbc_drivers()
-    except Exception:
-        pass
+            # Log información sobre las URLs de conexión (sin contraseñas)
+            if FACTURAS_DATABASE_URL.startswith("mssql+pyodbc"):
+                # Extraer información sin exponer contraseñas
+                import re
+                match = re.search(r'mssql\+pyodbc://([^:]+):[^@]+@([^?]+)', FACTURAS_DATABASE_URL)
+                if match:
+                    logger.info(f"URL Facturas: mssql+pyodbc://{match.group(1)}:***@{match.group(2)}")
+            if CLIENTES_DATABASE_URL.startswith("mssql+pyodbc"):
+                import re
+                match = re.search(r'mssql\+pyodbc://([^:]+):[^@]+@([^?]+)', CLIENTES_DATABASE_URL)
+                if match:
+                    logger.info(f"URL Clientes: mssql+pyodbc://{match.group(1)}:***@{match.group(2)}")
+    except Exception as e:
+        logger.warning(f"Error en diagnóstico ODBC: {e}")
 
 
 def log_pool_status():
